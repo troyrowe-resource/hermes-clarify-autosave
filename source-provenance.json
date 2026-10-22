@@ -83,6 +83,13 @@
       "summary": "Launcher passed on PowerShell 5.1 and 7. Windows native 19 expected, 0 unexpected, 0 skipped, 0 flaky. Windows Python 29 files, 428 passed, 0 failed, 7 skipped (6 POSIX-only, 1 symlink-privilege). Linux compute-host native 2/2 and Python 2 files, 39 passed. Isolation passed. Package: the package job passed in 56 min 22 s of its 60 (a cold dependency cache: its runner had image 20261007.264.1, for which no cache existed yet; prepare 30 min 56 s, build 16 min 18 s) and uploaded HermesClarifyCandidate-f19f3d6-win-x64.zip (3,224,699,779 bytes, SHA-256 2cc19ec5...; artifact digest ea29f72c...); the lead downloaded it and re-hashed the artifact, the zip and all 115,778 listed files: all matched. Accept failed: the archive check passed and the direct (no-launcher) run passed, but the launcher run's spec refused the shipped launcher's contract before starting the app: the job's own DECOY_HOME variable carried the decoy Hermes home into the candidate's environment, because the launcher filtered inherited variables by name only. Fixed in 026e3ec6: the launcher now withholds any inherited variable whose value is, or lies inside, a real Hermes location."
     },
     {
+      "run_url": "https://github.com/troyrowe-resource/hermes-clarify-autosave/actions/runs/39814469770",
+      "commit": "026e3ec6e01ee0c34eff271e84862d193872d2c4",
+      "conclusion": "success: launcher, Windows native, Linux compute-host, package and accept jobs passed",
+      "role": "full run",
+      "summary": "All five jobs passed. Launcher self-test 31 of 31 on PowerShell 5.1 and 7; Windows native 19 expected, 0 unexpected, 0 skipped, 0 flaky; Windows Python 29 files, 428 passed, 0 failed, 7 skipped; Linux compute-host native 2/2 and Python 2 files, 39 passed; package 55 min 38 s of its 60 (zip HermesClarifyCandidate-026e3ec-win-x64.zip, SHA-256 0b8a7227..., artifact digest 92e53e14...; the lead re-hashed the artifact, the zip and all 115,778 listed files: matched); accept passed: archive verified, the launcher run (a real 40-second clarify timeout, both drafts confirmed on the server and recalled from it, the model told they were not submitted, Stop exit 0, no process left) and the direct run. Its launcher still passed TMPDIR through (Python temp files outside the sandbox) and had latent filter defects, fixed in f95d7404."
+    },
+    {
       "run_url": "{{RUN7_URL}}",
       "run_id": "{{RUN7_ID}}",
       "commit": "{{RUN7_COMMIT}}",
