@@ -106,10 +106,14 @@ test('nonstable runtime pins userData before the app name can change', async ():
     }
   }
 
+  // An explicit env, not the one of the process running the tests: an E2E sandbox exports HERMES_DESKTOP_USER_DATA_DIR,
+  // which skips the pin on purpose.
+  const noOverride: NodeJS.ProcessEnv = {}
+
   try {
-    assert.equal(runtime.applyDesktopIdentity(app, stable), null)
+    assert.equal(runtime.applyDesktopIdentity(app, stable, noOverride), null)
     assert.equal(paths.userData, path.join(root, 'Hermes'))
-    assert.equal(runtime.applyDesktopIdentity(app, canary), canary.displayName)
+    assert.equal(runtime.applyDesktopIdentity(app, canary, noOverride), canary.displayName)
     assert.equal(paths.userData, path.join(paths.appData, canary.appNamePascal))
     assert.equal(name, canary.displayName)
   } finally {

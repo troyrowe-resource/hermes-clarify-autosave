@@ -111,6 +111,34 @@ async def test_damaged_and_foreign_records_never_reach_recall_and_never_break_it
         await connection.close()
 
 
+@pytest.mark.asyncio
+async def test_a_draft_with_an_unpaired_surrogate_is_refused_before_the_book_and_the_wait_ends_normally(tmp_path, monkeypatch):
+    """A JS string with a lone surrogate reaches the backend as JSON ``"\\ud800"`` and decodes to a str UTF-8 cannot
+    encode. The canonical dispatcher already refuses such a value against the declared contract (``4001 invalid_params``
+    naming ``text``) before any handler runs, so on the owner this route never reaches the book (the sidecar has no
+    value check at its dispatcher: tests/tui_gateway/test_clarify_drafts_failures.py; the book itself refuses in
+    ``normalize_draft``, tests/tools/test_clarify_drafts_failures.py). A guard, not a regression test: it passes without
+    the book's own check. The model-authored route that does reach the owner's book is the registry-level
+    ``test_a_request_whose_own_questions_the_store_cannot_encode_still_settles_with_durable_false``."""
+    authority, connection = await _owner(tmp_path, monkeypatch)
+    try:
+        peer, worker, out = _start_batch(authority, monkeypatch, timeout=1)
+        rid = await _rid(peer)
+        assert (await _draft(connection, rid, 'q0', text='kept', revision=1))['result']['durable'] is True
+        for revision, text in ((2, json.loads('"\\ud800"')), (3, 'half a pair \ud83d')):
+            refused = await _draft(connection, rid, 'q1', text=text, revision=revision)
+            assert refused['error'] == {'code': 4001, 'message': 'invalid_params',
+                                        'data': {'reason': 'invalid_params', 'fields': ['text']}}, refused
+        assert [r['drafts'] for r in (await _rpc(connection, 'clarify.drafts', {'session_id': 's'}))['result']['drafts']] == [
+            {'q0': {'choices': [], 'text': 'kept', 'revision': 1}}]
+        await asyncio.to_thread(worker.join, 10)
+        assert not worker.is_alive()
+    finally:
+        await connection.close()
+    assert out['answers'] == {} and out['outcome'] == 'timed_out', 'the wait still ended with its result'
+    assert out['drafts'] == {'q0': {'choices': [], 'text': 'kept', 'revision': 1}} and out['drafts_durable'] is True
+
+
 def test_the_owner_scope_is_this_authoritys_profile_home_the_owner_gateway_and_the_stored_session_id(tmp_path):
     from gateway.session_clarify_draft import owner_draft_scope, owner_home
     profile, multiplexed = tmp_path / 'profile', tmp_path / 'multiplexed'

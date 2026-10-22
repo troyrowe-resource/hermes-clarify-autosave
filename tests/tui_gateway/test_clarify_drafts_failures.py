@@ -118,6 +118,27 @@ def test_a_refused_disk_is_durable_false_on_the_wire_and_in_the_model_result(sid
     assert [r['status'] for r in view['responses']] == ['unanswered', 'unanswered']
 
 
+def test_a_draft_with_an_unpaired_surrogate_is_invalid_params_and_never_costs_the_wait_its_drafts(sidecar, monkeypatch):
+    """The sidecar's dispatcher checks only unknown keys (``validate_params``), so the value check is the book's: a JSON
+    ``"\\ud800"`` from a JS string is refused whole (4002), nothing is held, and the real ``_clarify_block`` wait still
+    ends with its result and the drafts it does hold (it used to die at the settlement, losing the model's result)."""
+    worker, out, rid, questions = _ask(monkeypatch)
+    assert _draft(sidecar, rid, 'q0', text='kept')['result'] == {'status': 'ok', 'revision': 1, 'durable': True}
+    for revision, text in ((2, json.loads('"\\ud800"')), (3, 'half a pair \ud83d')):
+        refused = _draft(sidecar, rid, 'q1', text=text, revision=revision)
+        assert refused['error']['code'] == 4002, refused
+    recalled = _call(sidecar.peer, 'clarify.drafts', {'session_id': SID})['result']['drafts']
+    assert [r['drafts'] for r in recalled] == [{'q0': {'choices': [], 'text': 'kept', 'revision': 1}}]
+    worker.join(10)
+    assert not worker.is_alive()
+
+    result = out['result']
+    assert result['answers'] == {} and result['outcome'] == 'timed_out', 'the wait still ended with its result'
+    assert result['drafts'] == {'q0': {'choices': [], 'text': 'kept', 'revision': 1}} and result['drafts_durable'] is True
+    view = json.loads(_result(questions, result))
+    assert [d['typed_text'] for d in view['drafts']] == ['kept'] and view['drafts_submitted'] is False
+
+
 def test_damaged_and_foreign_records_never_reach_recall_and_never_break_it(sidecar, tmp_path):
     typed = {'q0': {'choices': [], 'text': 'mine', 'revision': 1}}
     questions = _questions()

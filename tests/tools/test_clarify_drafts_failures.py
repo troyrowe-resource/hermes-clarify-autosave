@@ -179,6 +179,71 @@ def test_recall_lists_at_most_the_newest_fifty_and_the_older_files_stay_readable
     assert [r["request_id"] for r in store.list_records(scope, "srq-000000000000")] == ["srq-000000000000"]
 
 
+# What a JS string with an unpaired surrogate becomes after JSON: ``JSON.stringify("\ud800")`` is the 8-character text
+# "\ud800" in quotes and ``json.loads`` turns it into exactly one lone surrogate code point, which UTF-8 cannot encode.
+LONE_SURROGATES = [json.loads('"\\ud800"'), json.loads('"\\udfff"'), "half a pair \ud83d, then \ude00"]
+
+
+@pytest.mark.parametrize("text", LONE_SURROGATES)
+def test_a_draft_text_utf8_cannot_encode_is_refused_whole_and_never_held(scope, text):
+    book = store.DraftBook(RID, QUESTIONS, scope)
+    assert _save(book, "q0", "kept", 1)["durable"] is True
+
+    with pytest.raises(store.DraftError):
+        _save(book, "q1", text, 2)
+
+    assert book.snapshot(set()) == {"q0": {"choices": [], "text": "kept", "revision": 1}}, "the refused draft is not held"
+    assert _save(book, "q0", "kept, edited", 3) == {"status": "ok", "revision": 3, "durable": True}
+    assert book.settle({}, "timed_out")["drafts_durable"] is True
+
+
+def test_a_pick_of_an_offered_label_utf8_cannot_encode_is_refused_too(scope):
+    questions = [{"qid": "q0", "question": "Which?", "choices": ["fine", "broken \ud800"], "multi_select": False}]
+    book = store.DraftBook(RID, questions, scope)
+
+    with pytest.raises(store.DraftError):
+        book.save("q0", ["broken \ud800"], "", 1, locked=set, is_open=lambda: True)
+
+    assert book.snapshot(set()) == {}
+    # The request's own label is unwritable, so no record of it can exist: a good pick is held, honestly not durable.
+    assert book.save("q0", ["fine"], "", 2, locked=set, is_open=lambda: True) == {
+        "status": "ok", "revision": 2, "durable": False}
+
+
+def test_a_record_the_store_cannot_encode_is_durable_false_and_neither_save_lock_nor_settle_raises(scope):
+    """The MODEL's own question carries an unpaired surrogate (a tool-call JSON ``\\ud800`` decodes to it), so no record
+    of this request can be written. That is a persistence problem like a full disk: ``durable: false``, never an exception
+    out of a save, a lock's supersede and above all never out of the settlement the model's answers ride on."""
+    questions = [{"qid": "q0", "question": "Open with \ud800?", "choices": None, "multi_select": False},
+                 {"qid": "q1", "question": "Then?", "choices": None, "multi_select": False}]
+    book = store.DraftBook(RID, questions, scope)
+
+    assert _save(book, "q0", "typed", 1) == {"status": "ok", "revision": 1, "durable": False}
+    assert _save(book, "q1", "more", 1) == {"status": "ok", "revision": 1, "durable": False}
+    book.supersede("q0")  # the lock of q0 re-persists what is left: the same refusal, the same silence
+    settled = book.settle({"q0"}, "timed_out")
+
+    assert settled == {"drafts": {"q1": {"choices": [], "text": "more", "revision": 1}},
+                       "drafts_request_id": RID, "drafts_durable": False}
+    assert not scope.path(RID).exists()
+    assert not scope.directory.exists() or list(scope.directory.iterdir()) == [], "no temp file left behind"
+
+
+def test_purge_also_removes_the_crash_residue_of_an_interrupted_save_but_only_that_sessions(tmp_path):
+    """A process killed between the temp file and the rename leaves ``.draft-*.tmp`` holding the draft's full text."""
+    mine, other = store.DraftScope(tmp_path, "tui_gateway", "gone"), store.DraftScope(tmp_path, "tui_gateway", "kept")
+    store.persist(mine, RID, QUESTIONS, {"q0": {"choices": [], "text": "typed", "revision": 1}})
+    store.persist(other, RID, QUESTIONS, {"q0": {"choices": [], "text": "typed", "revision": 1}})
+    residue = {"gone": mine.directory / ".draft-abc123.tmp", "kept": other.directory / ".draft-def456.tmp"}
+    for path in residue.values():
+        path.write_text('{"drafts": "full text of an unsent answer"}', encoding="utf-8")
+
+    assert store.purge_session(tmp_path, "gone") == 2, "the record and the residue"
+
+    assert not mine.directory.exists(), "nothing of the chat is left, so its directory goes too"
+    assert residue["kept"].exists() and other.path(RID).exists(), "another session's files, residue included, stay"
+
+
 # --- races: one save held inside the real write while the other verb arrives ----------------------------------------
 
 def test_a_discard_that_arrives_while_a_save_is_mid_write_leaves_nothing_behind(scope, monkeypatch):

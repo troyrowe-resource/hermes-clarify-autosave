@@ -119,7 +119,10 @@ test('channel packaging reuses admitted identity and rejects unsupported or unsa
             displayName = value
           }
         },
-        a.identity
+        a.identity,
+        // An explicit env, not the one of the process running the tests: an E2E sandbox exports
+        // HERMES_DESKTOP_USER_DATA_DIR, which skips the pin asserted below on purpose.
+        {}
       ),
       first.identity.displayName
     )

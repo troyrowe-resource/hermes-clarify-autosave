@@ -155,6 +155,23 @@ def test_a_compression_chain_takes_the_drafts_saved_under_every_key_it_had_with_
     assert _saved(home, "chain-root") == [] and _saved(home, "chain-tip") == []
 
 
+def test_the_crash_residue_of_an_interrupted_save_goes_with_the_chat_too(db, home):
+    """A process killed between a save's temp file and its rename leaves ``.draft-*.tmp`` holding the full unsent text."""
+    for session_id in ("doomed", "kept"):
+        _chat(db, session_id)
+        _save(home, session_id)
+    residue = {(session_id, gateway): store.DraftScope(home, gateway, session_id).directory / ".draft-0a1b2c.tmp"
+               for session_id in ("doomed", "kept") for gateway in GATEWAYS}
+    for path in residue.values():
+        path.write_text('{"drafts": "full text of an unsent answer"}', encoding="utf-8")
+
+    assert db.delete_session("doomed")
+
+    assert not any(path.exists() for (session_id, _), path in residue.items() if session_id == "doomed")
+    assert not any(store.DraftScope(home, gateway, "doomed").directory.exists() for gateway in GATEWAYS)
+    assert all(path.exists() for (session_id, _), path in residue.items() if session_id == "kept"), "another chat's stay"
+
+
 @pytest.mark.parametrize("archive", ["set_session_archived", "canonical_sidebar"])
 def test_a_deliberate_archive_keeps_the_drafts_and_so_does_un_archiving(db, home, archive):
     _chat(db, "arch")

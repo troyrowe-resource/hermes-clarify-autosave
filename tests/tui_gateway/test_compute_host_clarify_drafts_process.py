@@ -127,11 +127,27 @@ def _turn_over(live):
                timeout=ANSWERABLE_SECS, what="the isolated turn to complete in the serving process")
 
 
+def test_a_draft_with_an_unpaired_surrogate_is_refused_before_the_pipe_and_the_childs_wait_still_ends_with_its_drafts(hosted):
+    """A JS string's lone surrogate (JSON ``"\\ud800"``) cannot ride the UTF-8 host pipe. The parent refuses it with the
+    in-process code (4002), the real child never sees it, and the child's wait still hands the model its result."""
+    live = _ask(hosted)
+    assert _draft(live, "q0", text="kept", revision=1)["result"]["durable"] is True
+    for revision, text in ((2, json.loads('"\\ud800"')), (3, "half a pair \ud83d")):
+        refused = _draft(live, "q1", text=text, revision=revision)
+        assert refused["error"]["code"] == 4002, refused
+    assert _snapshot(live)["drafts"] == {"q0": {"choices": [], "text": "kept", "revision": 1}}
+
+    _cancel_all(live)
+    result = _tool_result(hosted, live)
+    assert result["outcome"] == "cancelled" and result["drafts_durable"] is True
+    assert [d["typed_text"] for d in result["drafts"]] == ["kept"]
+
+
 def test_a_draft_saved_by_the_child_is_durable_recalled_by_the_parent_after_a_restart_and_never_an_answer(hosted):
     live = _ask(hosted)
     typed = "Open with the\nrecycling statistics — 42 % ✓"
     assert _draft(live, "q0", text=typed, revision=1)["result"] == {"status": "ok", "revision": 1, "durable": True}
-    assert _draft(live, "q1", choices=["Acme", "Cobalt"[:0] or "Bolt"], text="plus Delta", revision=1)["result"][
+    assert _draft(live, "q1", choices=["Acme", "Bolt"], text="plus Delta", revision=1)["result"][
         "durable"] is True
     assert _draft(live, "q0", text="older", revision=1)["result"] == {"status": "stale", "revision": 1, "durable": True}
     # Saving drafts never settles the request, and the reconnect snapshot follows the child's book.

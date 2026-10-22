@@ -49,6 +49,8 @@ MAX_LISTED_RECORDS = 50
 # Request ids of both registries: ``srq-`` + 12 hex (``uuid4().hex[:12]``).
 _REQUEST_ID = re.compile(r"^srq-[0-9a-f]{12}$")
 GATEWAYS = frozenset({"tui_gateway", "session_owner"})
+# The temp file a save writes before the rename; one a killed process left behind holds the draft's full text.
+_TEMP_PREFIX, _TEMP_SUFFIX = ".draft-", ".tmp"
 # Striped file locks: bounded no matter how many requests a long-lived process sees.
 _FILE_LOCKS = tuple(threading.Lock() for _ in range(64))
 
@@ -68,16 +70,30 @@ def _bare(choice: str) -> str:
     return strip_recommended(choice)
 
 
+def _utf8_clean(value: str) -> bool:
+    """UTF-8 can encode *value*. A JS string with an unpaired surrogate reaches us as JSON ``"\\ud800"`` and decodes to a
+    str that cannot be: the store writes UTF-8, so such a draft can never be saved and must never be held."""
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def normalize_draft(question: dict, choices, text, revision) -> dict:
     """``{choices, text, revision}`` for *question* (a wire entry: ``qid``, ``question``, ``choices``,
     ``multi_select``). Choices must be the question's own offered labels (bare, recommendation label
-    stripped), at most one for a single-select; text is the typed/"Other" answer verbatim."""
+    stripped), at most one for a single-select; text is the typed/"Other" answer verbatim. Text and
+    choices must be encodable as UTF-8 (no unpaired surrogate): a draft the store cannot write is refused
+    whole at this boundary, never held in memory to fail later at the settlement."""
     if isinstance(revision, bool) or not isinstance(revision, int) or not 0 < revision <= MAX_REVISION:
         raise DraftError("revision must be a positive integer")
     if not isinstance(text, str):
         raise DraftError("text must be a string")
     if len(text) > MAX_DRAFT_TEXT_CHARS:
         raise DraftError(f"text is {len(text)} characters; the limit is {MAX_DRAFT_TEXT_CHARS}")
+    if not _utf8_clean(text):
+        raise DraftError("text must be valid Unicode: an unpaired surrogate cannot be saved")
     if not isinstance(choices, list) or not all(isinstance(c, str) for c in choices):
         raise DraftError("choices must be a list of strings")
     offered = [_bare(c) for c in (question.get("choices") or [])]
@@ -90,6 +106,8 @@ def normalize_draft(question: dict, choices, text, revision) -> dict:
             picked.append(bare)
     if len(picked) > 1 and not question.get("multi_select"):
         raise DraftError("a single-select question takes at most one choice")
+    if not all(_utf8_clean(choice) for choice in picked):
+        raise DraftError("choices must be valid Unicode: an unpaired surrogate cannot be saved")
     return {"choices": picked, "text": text, "revision": revision}
 
 
@@ -182,7 +200,7 @@ def _atomic_write(path: Path, payload: dict) -> None:
     from hermes_constants import assert_named_profile_home_live
     assert_named_profile_home_live(path.parent)
     make_user_dir(path.parent, mode=0o700, parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=".draft-", suffix=".tmp", dir=str(path.parent))
+    fd, tmp = tempfile.mkstemp(prefix=_TEMP_PREFIX, suffix=_TEMP_SUFFIX, dir=str(path.parent))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False)
@@ -259,7 +277,8 @@ def _belongs(record: dict, scope: DraftScope, request_id: str) -> bool:
 def persist(scope: DraftScope, request_id: str, questions: list[dict], drafts: dict, *,
             outcome: str | None = None) -> None:
     """Write the request's current drafts. A request whose every draft is blank is removed: there is
-    nothing left to recover. Raises ``OSError`` when the disk refuses."""
+    nothing left to recover. Raises ``OSError`` when the disk refuses and ``UnicodeError`` when a string
+    in the record (a question the MODEL wrote can carry an unpaired surrogate) cannot be encoded."""
     path = scope.path(request_id)
     with _lock_for(path):
         live = {qid: d for qid, d in drafts.items() if not is_blank(d)}
@@ -327,13 +346,15 @@ def discard(scope: DraftScope, request_id: str) -> bool:
 
 
 def purge_session(home: str | os.PathLike, session_key: str) -> int:
-    """Remove every gateway's drafts of one deleted session in *home*. Returns the files removed."""
+    """Remove every gateway's drafts of one deleted session in *home*: its records and the ``.draft-*.tmp`` a save
+    killed mid-write left behind (that holds the draft's full text too). Only that session's own directories are
+    touched. Returns the files removed."""
     removed = 0
     for gateway in sorted(GATEWAYS):
         directory = _session_dir(Path(home), gateway, session_key)
         if not directory.is_dir():
             continue
-        for path in directory.glob("*.json"):
+        for path in (*directory.glob("*.json"), *directory.glob(f"{_TEMP_PREFIX}*{_TEMP_SUFFIX}")):
             with _lock_for(path):
                 try:
                     path.unlink()
@@ -374,7 +395,9 @@ class DraftBook:
             return False
         try:
             persist(self.scope, self.request_id, self.questions, self._drafts, outcome=outcome)
-        except OSError:
+        except (OSError, UnicodeError):
+            # A persistence problem is never an exception out of a save, a lock or the settlement the model's
+            # answers ride on: it is ``durable: false`` (the drafts still reach the model from memory).
             logger.warning("clarify drafts for %s could not be saved to disk", self.request_id, exc_info=True)
             return False
         self._persisted = {qid: d["revision"] for qid, d in self._drafts.items()}
@@ -425,7 +448,8 @@ class DraftBook:
     def settle(self, answers: Collection[str], outcome: str | None) -> dict:
         """Close the book as the request ends; the result fields to add: ``drafts`` (questions no answer
         or skip settled, each with its revision), ``drafts_request_id`` and ``drafts_durable`` (every
-        reported revision is the one on disk). ``{}`` when nothing is left."""
+        reported revision is the one on disk). ``{}`` when nothing is left. Never raises for a persistence problem
+        (that is ``drafts_durable: false``): the answers the settlement carries must reach the model."""
         with self._lock:
             self._closed = True
             for qid in [qid for qid in self._drafts if qid in answers]:

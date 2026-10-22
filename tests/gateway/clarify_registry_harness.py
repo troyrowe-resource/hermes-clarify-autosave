@@ -16,7 +16,6 @@ KINDS = ['sidecar', 'owner']
 SESSION = 's1'
 QUESTIONS = [{'qid': 'q0', 'question': 'colour?', 'choices': ['red', 'blue'], 'multi_select': False},
              {'qid': 'q1', 'question': 'size?', 'choices': None, 'multi_select': False}]
-QIDS = ['q0', 'q1']
 
 
 class _Peer:
@@ -32,8 +31,9 @@ class _Peer:
 
 
 class OpenBatch:
-    def __init__(self, kind, monkeypatch, scope=None, *, timeout=30):
+    def __init__(self, kind, monkeypatch, scope=None, *, timeout=30, questions=QUESTIONS):
         self.kind, self.out, self.interrupted = kind, {}, threading.Event()
+        qids = [question['qid'] for question in questions]
         if kind == 'sidecar':
             from tui_gateway import server_requests as reg
             self.frames = []
@@ -43,7 +43,7 @@ class OpenBatch:
             reg.reset_for_tests()
 
             def ask():
-                return reg.send('clarify', SESSION, {'questions': QUESTIONS}, timeout=timeout, qids=QIDS,
+                return reg.send('clarify', SESSION, {'questions': questions}, timeout=timeout, qids=qids,
                                 draft_scope=scope)
         else:
             from gateway import session_server_requests as reg
@@ -53,8 +53,8 @@ class OpenBatch:
             self.frames = peer.frames
 
             def ask():
-                return reg.ask_viewer_result(events, SESSION, 'clarify', {'questions': QUESTIONS}, timeout=timeout,
-                                             cancelled=self.interrupted.is_set, qids=QIDS, draft_scope=scope)
+                return reg.ask_viewer_result(events, SESSION, 'clarify', {'questions': questions}, timeout=timeout,
+                                             cancelled=self.interrupted.is_set, qids=qids, draft_scope=scope)
         self.reg = reg
         self.worker = threading.Thread(target=lambda: self.out.update(result=ask()), daemon=True)
         self.worker.start()

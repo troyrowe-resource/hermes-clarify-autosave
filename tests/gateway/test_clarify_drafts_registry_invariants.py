@@ -101,3 +101,35 @@ def test_a_draft_after_the_request_ended_reaches_nothing_and_writes_nothing(regi
         assert batch.save(qid, 'too late', 99) is None, 'no open request takes it (both RPC layers answer expired)'
     assert batch.discard() is False
     assert _on_disk(scope) == kept, 'and nothing was written or removed'
+
+
+def test_a_draft_utf8_cannot_encode_is_refused_and_the_wait_still_ends_with_the_drafts_it_holds(registry, scope):
+    """A JS string with an unpaired surrogate arrives as JSON ``"\\ud800"``. The save must refuse it whole (nothing held), and
+    the request must still settle: the model's result may not die because of a draft the store cannot write."""
+    batch = registry(scope)
+    assert batch.save('q0', '', 1, ['red'])['status'] == 'ok'
+
+    with pytest.raises(store.DraftError):
+        batch.save('q1', 'half a pair \ud83d', 2)
+
+    result = batch.close_with({})  # the card's plain cancel
+    assert result['answers'] == {} and result['outcome'] == 'cancelled'
+    assert result['drafts'] == {'q0': {'choices': ['red'], 'text': '', 'revision': 1}}
+    assert result['drafts_durable'] is True
+
+
+def test_a_request_whose_own_questions_the_store_cannot_encode_still_settles_with_durable_false(registry, scope):
+    """The model's own question text can carry an unpaired surrogate (tool-call JSON ``\\ud800``), so no record can be
+    written: every save, lock and the settlement report ``durable: false`` and none of them raises."""
+    questions = [{'qid': 'q0', 'question': 'colour \ud800?', 'choices': ['red', 'blue'], 'multi_select': False},
+                 {'qid': 'q1', 'question': 'size?', 'choices': None, 'multi_select': False}]
+    batch = registry(scope, questions=questions)
+    assert batch.save('q0', '', 1, ['blue']) == {'status': 'ok', 'revision': 1, 'durable': False}
+    assert batch.save('q1', 'large', 1) == {'status': 'ok', 'revision': 1, 'durable': False}
+    assert batch.lock('q0', 'red') == ['q1'], 'a lock re-persists what is left and still must not raise'
+
+    result = batch.close_with({})
+    assert result['answers'] == {'q0': 'red'} and result['outcome'] == 'cancelled'
+    assert result['drafts'] == {'q1': {'choices': [], 'text': 'large', 'revision': 1}}
+    assert result['drafts_durable'] is False
+    assert _on_disk(scope) == {}

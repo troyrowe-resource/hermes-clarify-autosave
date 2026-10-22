@@ -12,6 +12,7 @@ Parent half: a fake supervisor stands in for ``HostSupervisor`` (no child is sta
 ``ComputeHost`` over real ``server_requests`` / ``DraftBook`` / disk store. The real-process end to end is
 ``test_compute_host_clarify_drafts_process.py``.
 """
+import json
 import queue
 import threading
 from pathlib import Path
@@ -148,6 +149,16 @@ def test_a_dead_or_unreachable_child_is_an_error_never_a_durable_save(hosted, fa
     assert response["error"]["code"] == 5019 and "result" not in response
     # Nothing was claimed saved anywhere, in this process either.
     assert list_records(DraftScope(hosted.home, "tui_gateway", "stored-1")) == []
+
+
+@pytest.mark.parametrize("text", [json.loads('"\\ud800"'), "half a pair \ud83d, then \ude00"])
+def test_a_draft_utf8_cannot_encode_is_refused_here_with_the_in_process_code_and_never_sent_to_the_child(hosted, text):
+    """The host pipe carries UTF-8 JSON; a JS string's unpaired surrogate cannot ride it. The caller gets the same
+    ``4002`` the in-process book answers (not a ``5019`` host failure) and nothing is sent."""
+    hosted.supervisor.replies.append(_ack({"status": "ok", "revision": 1, "durable": True}))  # unused when refused
+    response = _draft(hosted, text=text)
+    assert response["error"]["code"] == 4002 and "result" not in response
+    assert hosted.supervisor.calls == []
 
 
 def test_a_child_that_exited_mid_request_answers_through_the_supervisors_error_frame(hosted):
