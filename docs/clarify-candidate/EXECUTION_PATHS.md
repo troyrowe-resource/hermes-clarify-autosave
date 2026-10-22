@@ -8,11 +8,49 @@ Base for every `path:line` citation: commit `4a92978697f386d7124e81d463f3a404ac4
 commit of `candidate/clarify-autosave-windows`; read a file with `git show 4a929786:<path>`). Lines
 drift as candidate commits land, so re-read a citation against the commit you are checking.
 
-Status: written by worker S5 on 2026-10-22 while other workers were still changing the candidate. Their
-commits and uncommitted edits landed in the shared checkout during the work; S5 did not review or verify
-them, and every citation stays pinned to the base. Anything that depends on the candidate's own changes is a
-placeholder: search for `LEAD:`. A route is "fixed in candidate" only when a commit and a named passing test
-say so. This document does not.
+Status: written by worker S5 on 2026-10-22. Sections 1 to 6 and the appendices analyse the **base** state.
+They were written while other workers were still changing the candidate; S5 did not review or verify those
+changes, and every `path:line` citation stays pinned to the base. The "Candidate result" section below records
+what the candidate changed for each route. It is copied from the lead's verified fact sheet (tag `[lead]`):
+S5 did not re-run any of those tests or re-measure anything. A route is "fixed in candidate" only where the
+result names a test or a run that supports it.
+
+## Candidate result
+
+What the candidate changed for each route, and what proves it. Everything in this section is tagged `[lead]`:
+it comes from the lead's verified fact sheet, with numbers the lead read back from the Actions run artifacts
+(all on standard `windows-2025` x64) or from clean-tree command output. S5 did not re-run or re-measure any of
+it. Sections 1 to 6 below analyse the base commit and are kept as written, with one citation corrected (4.1).
+Section 5 gives the disposition of every gap and Appendix B lists the runs. "Change N" means item N of the ten
+product changes listed in `README.md` (What the candidate changes) and in `HANDOFF.md` section 1.
+
+| Route (ID from section 2) | Protection after the candidate | Proof `[lead]` | Still not covered |
+|---|---|---|---|
+| R1 and R2: Desktop on the canonical local gateway (the default) | **Server plus Device.** The Desktop asks for one batch request, so a multi-question clarify is a batch card: it saves on the server, offers recall and discard, replays after a reconnect or restart with its locked answers and drafts, and the assistant is told the drafts were not submitted | Windows native 19/19 (seed, mixed, failure, reconnect and restart specs) in runs 39768307967 and 39780275912, plus gateway tests | A rewind (Edit, Regenerate, Restore) that is the first action after app launch; an older canonical gateway that refuses the flag; Desktop senders the change did not touch (section 6) |
+| R3: Desktop on a remote `hermes serve` (the legacy `tui_gateway` sidecar, in process) | **Server plus Device**, with reconnect replay (the sidecar's snapshot), recall from a fresh backend, and discard | `clarify-drafts-native-serve.spec.ts` in the same two runs | Sidecar compression rotates the session key; drafts saved under the old key drop out of recall |
+| R4: compute-host child (`dashboard.turn_isolation`, legacy sidecar only) | **Server, through a relay, on POSIX.** `clarify.draft` and `clarify.drafts.discard` reach the child that owns the request; a crashed or wedged child answers error 5019, never `ok` with `durable: true` | Linux job: 2/2 native plus real-child Python tests | **Windows: not supported in practice.** `tui_gateway/host_supervisor.py` calls `os.kill(pid, 0)` (which is `CTRL_C_EVENT` on Windows), refers to `signal.SIGKILL` (missing there) and relies on `/proc` and `ps` lookups; the upstream real-child tests are Linux-only. The Windows Desktop's local route never reaches the compute host |
+| R5, R6: Ink TUI; dashboard `/chat` | **None**: no draft code | Unchanged | Everything |
+| R7: classic CLI | **None**: it asks for batches but never sends drafts | Unchanged | Everything |
+| R8: other per-question viewers (ACP editors, raw WebSocket clients, `api_server` runs, managed workers) | **Device** on the Desktop, **None** elsewhere | Unchanged | Everything |
+| R9, R11: messaging cards; headless runs, hosted rooms, A2A peers | Not applicable | Not applicable | Not applicable |
+| R10: Desktop against an older backend with no `clarify.draft` | **Device**, as before. The Desktop's "method not found" memo now lapses after 10 minutes, so it tries the backend again | Change 5 of the ten (renderer robustness) | The backend still has no `clarify.draft` |
+
+How the Desktop asks for a batch, and what it does for an older backend `[lead]`: it sends `clarify_batch: true`
+only to canonical owners (a WebSocket URL with `native_dial`, or the canonical local owner) and never to a
+legacy `hermes serve` sidecar, which rejects unknown keys with code 4000. An older canonical gateway that
+refuses the key before admitting the turn (`invalid_params`, code 4001) gets one resend without the flag under
+the same submission id, and the Desktop remembers that owner as unsupported for 10 minutes. Edit, Regenerate
+and Restore offer the flag only to an owner that already accepted it in this app run, because a rewind cannot
+be safely re-sent; a rewind that is the first action after app launch therefore still gets per-question cards.
+
+Per-question cards stay **Device-only on the Desktop or unprotected elsewhere** for ACP editors, raw WebSocket
+clients, `api_server`, managed workers, an older canonical gateway that refuses `clarify_batch`, and a rewind
+that is the first action after app launch `[lead]`. The Ink TUI and dashboard `/chat` have no draft code, the
+classic CLI batches but never sends drafts, messaging cards are not applicable, and the `hermes-bots` plugin's
+submit paths are untouched. Section 3.1 lists each with its base evidence.
+
+Gap dispositions (section 5): fixed G1, G3 (POSIX only), G4, G10, G11, G17 and G18; partly fixed G5, G6 and G9;
+disclosed limitations G2, G7, G8 and G13 to G15; not applicable G12; always true G16.
 
 ## 0. How to read the evidence
 
@@ -22,6 +60,7 @@ say so. This document does not.
 | `[probe]` | Executed by S5 in a scratch directory against a `git archive` of the base commit (Appendix A). Standard library and pydantic only. Not CI evidence and not a test of any candidate change. |
 | `[CI]` | Read back from the baseline Actions run [39740118224](https://github.com/troyrowe-resource/hermes-clarify-autosave/actions/runs/39740118224) (commit `4a92978`, job 119695038081, artifact `clarify-windows-39740118224-1`, retained 7 days). That run failed; Appendix B. |
 | `[S2]` | Reported by the coordinator as verified by worker S2 on a native run plus code. S5 did not re-run it; the `[CI]`, `[code]` and `[probe]` evidence below is consistent with it. |
+| `[lead]` | Reported by the lead in the verified fact sheet for the final handoff: numbers the lead read back from the Actions run artifacts, clean-tree command output or the session record. S5 did not re-run or re-measure it. Used only for the candidate's own results. |
 | `[inferred]` | A conclusion from code that nobody executed. Said so each time. |
 
 Protection levels:
@@ -33,7 +72,7 @@ Protection levels:
   every edit (`apps/desktop/src/store/clarify-drafts.ts:106-110`, `319-334`). No timer removes it.
 - **None**: Hermes keeps nothing.
 
-## 1. Findings in brief
+## 1. Findings in brief (base commit)
 
 1. Only two registries can hold a draft on the server, and both are batch registries built on the
    same `DraftBook`: the legacy `tui_gateway` sidecar (`tui_gateway/server_requests.py`) and the
@@ -63,25 +102,26 @@ Protection levels:
 
 (a) unsent-draft protection, (b) server save through `clarify.draft` with on-disk durability,
 (c) recall `clarify.drafts` and discard `clarify.drafts.discard`, (d) what the model is told when the
-wait times out. Detail and citations per route are in section 3.
+wait times out. Columns (a) to (d) describe the base commit; the last column is the candidate's result
+`[lead]`, with the proof in the Candidate result section. Detail and citations per route are in section 3.
 
 | ID | Route (client, backend, card shape) | (a) Protection at base | (b) Server save | (c) Recall / discard | (d) Model told at timeout | After candidate |
 |---|---|---|---|---|---|---|
-| R1 | Desktop, canonical local gateway (`gateway ensure`, WebSocket `native_dial`), unmodified Desktop: one card per question | **Device** | No: `clarify.draft` answers `expired` | Refused: the card's 10-hex id is not an `srq-` id, so both verbs answer `invalid_params` `[probe P6b]`; the card shows "Could not read the drafts saved on the server"; a discard still removes the Desktop's own copy | `timed_out`, `notice: "[user did not respond within Nm]"`, every response `unanswered`, no `drafts` | <!-- LEAD: post-fix verified state of R1 (commit, test, run) --> Pending |
-| R2 | Same owner, turn flagged `clarify_batch: true` (classic CLI at base; the Desktop once the candidate's change lands): one batch request, `session_owner` store | CLI: **None** (it never sends drafts). Desktop: **Server** plus Device once it declares the flag | Yes `[probe P8]`: `ok`, `durable: true` | Yes, for an attached `session:respond` viewer | `timed_out` plus `drafts`, `drafts_submitted: false`, `drafts_notice`, `drafts_request_id`, `drafts_durable`; no `notice` | <!-- LEAD: post-fix verified state of R2 --> Pending |
-| R3 | Desktop on a legacy transport (no `native_dial`), `tui_gateway` sidecar in process: one batch request, `tui_gateway` store | **Server** plus Device (the Desktop only; the Ink TUI on the same sidecar is R5) | Yes `[probe P4b]` | Yes (by request id, or the session's list) | As R2 | None planned |
-| R4 | R3 with `dashboard.turn_isolation: true` (default `false`): the compute-host child owns the request | **Device** | No: the parent answers `expired` `[probe P4]` | Recall finds nothing; discard answers `missing` | `timed_out`, no `drafts`, no `notice` `[probe P4]` | <!-- LEAD: post-fix verified state of the compute-host relay (commit, test) --> Pending |
-| R5 | Ink TUI (`hermes --tui`): batch (sidecar) or per-question (shared gateway) | **None** | No: no client code | Not offered | Sidecar: `timed_out`, locked answers only. Shared gateway: as R1 | None planned |
-| R6 | Dashboard `/chat` (embeds the Ink TUI in a PTY; `web/src` has no clarify code) | **None** | No | Not offered | As R5 | None planned |
-| R7 | Classic CLI: in-process panel, or a viewer of the owner | **None** | In-process: no. Viewer: the owner opens a draft book that the CLI never calls | Not offered | `timed_out`, locked answers only | None planned |
-| R8 | Other per-question viewers of the owner: ACP editors, raw WebSocket clients, `api_server` runs, managed-worker executions | **None** (the Desktop is the only client with a draft store) | No: not an `srq-` id, so `expired` | Not offered | As R1 | None planned |
+| R1 | Desktop, canonical local gateway (`gateway ensure`, WebSocket `native_dial`), unmodified Desktop: one card per question | **Device** | No: `clarify.draft` answers `expired` | Refused: the card's 10-hex id is not an `srq-` id, so both verbs answer `invalid_params` `[probe P6b]`; the card shows "Could not read the drafts saved on the server"; a discard still removes the Desktop's own copy | `timed_out`, `notice: "[user did not respond within Nm]"`, every response `unanswered`, no `drafts` | **Server plus Device** once the Desktop asks for a batch: the card becomes the R2 batch card. Proof: Windows native 19/19, runs 39768307967 and 39780275912 `[lead]`. Still per-question: a rewind that is the first action after app launch, and an older gateway that refuses the flag (section 3.1) |
+| R2 | Same owner, turn flagged `clarify_batch: true` (classic CLI at base; the Desktop once the candidate's change lands): one batch request, `session_owner` store | CLI: **None** (it never sends drafts). Desktop: **Server** plus Device once it declares the flag | Yes `[probe P8]`: `ok`, `durable: true` | Yes, for an attached `session:respond` viewer | `timed_out` plus `drafts`, `drafts_submitted: false`, `drafts_notice`, `drafts_request_id`, `drafts_durable`; no `notice` | Desktop: **Server plus Device**, with the open card and its drafts replayed after a reconnect or restart. Proof: the native reconnect and restart specs, runs 39768307967 and 39780275912 `[lead]`. Classic CLI: unchanged (**None**) |
+| R3 | Desktop on a legacy transport (no `native_dial`), `tui_gateway` sidecar in process: one batch request, `tui_gateway` store | **Server** plus Device (the Desktop only; the Ink TUI on the same sidecar is R5) | Yes `[probe P4b]` | Yes (by request id, or the session's list) | As R2 | **Server plus Device**, now with native proof: `clarify-drafts-native-serve.spec.ts`, runs 39768307967 and 39780275912 `[lead]` |
+| R4 | R3 with `dashboard.turn_isolation: true` (default `false`): the compute-host child owns the request | **Device** | No: the parent answers `expired` `[probe P4]` | Recall finds nothing; discard answers `missing` | `timed_out`, no `drafts`, no `notice` `[probe P4]` | **Server** through a relay, **POSIX only** in practice: Linux job 2/2 native plus real-child Python tests; not supported on Windows `[lead]` |
+| R5 | Ink TUI (`hermes --tui`): batch (sidecar) or per-question (shared gateway) | **None** | No: no client code | Not offered | Sidecar: `timed_out`, locked answers only. Shared gateway: as R1 | Unchanged: no draft code `[lead]` |
+| R6 | Dashboard `/chat` (embeds the Ink TUI in a PTY; `web/src` has no clarify code) | **None** | No | Not offered | As R5 | Unchanged: no draft code `[lead]` |
+| R7 | Classic CLI: in-process panel, or a viewer of the owner | **None** | In-process: no. Viewer: the owner opens a draft book that the CLI never calls | Not offered | `timed_out`, locked answers only | Unchanged: it batches but never sends drafts `[lead]` |
+| R8 | Other per-question viewers of the owner: ACP editors, raw WebSocket clients, `api_server` runs, managed-worker executions | **None** (the Desktop is the only client with a draft store) | No: not an `srq-` id, so `expired` | Not offered | As R1 | Unchanged: **Device** on the Desktop, **None** elsewhere `[lead]` |
 | R9 | Messaging platforms (Telegram, Discord, Slack, WhatsApp, Google Chat, Photon and others): one card or numbered list per question | Not applicable: a tap or a typed reply is the answer; unsent text stays in the platform's composer | No | Not offered | As R1 | Not applicable |
-| R10 | Desktop, older backend with no `clarify.draft` | **Device** ("Server autosave unavailable: draft kept on this device only") | No: `-32601` | "This server cannot recall saved drafts" | As that backend's route | None planned |
+| R10 | Desktop, older backend with no `clarify.draft` | **Device** ("Server autosave unavailable: draft kept on this device only") | No: `-32601` | "This server cannot recall saved drafts" | As that backend's route | Unchanged, except that the Desktop's "method not found" memo now lapses after 10 minutes `[lead]` |
 | R11 | Headless (`chat -q`, oneshot), hosted rooms, forwarded A2A peers: no card is shown | Not applicable | No | Not offered | Answered or declined at once: `undelivered` | Not applicable |
 
 ## 3. Route notes
 
-### R1. Desktop on the canonical local gateway (one card per question)
+### R1. Desktop on the canonical local gateway (one card per question at base)
 
 How the Desktop gets there `[code]`
 
@@ -153,7 +193,14 @@ Reconnect `[code]`: the attach snapshot re-delivers pending per-question prompts
 (`gateway/session_authority.py:344`; `client.ts:493-511`), so an open card survives a reconnect and its
 staged picks come back from the device copy (`.../clarify/pending-drafts.tsx:67-104`).
 
-After the candidate's change: <!-- LEAD: post-fix verified state of R1: which prompt.submit senders declare clarify_batch, the test names, the run URL --> pending.
+After the candidate's change `[lead]`: the Desktop's canonical sends ask for a batch (`clarify_batch: true` on
+`prompt.submit`), so a Desktop turn on this route is the batch route of R2. The sender changes are under
+`apps/desktop/src/app/session/hooks/`: `use-prompt-actions/{submit.ts, rewind.ts, submission-destination.ts}` and
+`use-session-actions/{index.ts, session-create-request.ts}`, plus `app/contrib/hooks/use-session-tile-delegate.ts`;
+the gate is `apps/desktop/src/store/clarify-batch.ts` (canonical owners only; one resend without the flag when an
+older gateway refuses it; a 10-minute memory of that refusal; a rewind offers the flag only to an owner that
+already accepted it in this app run). Proof: Windows native 19/19 in runs 39768307967 and 39780275912. What still
+gets per-question cards is in sections 3.1 and 6.
 
 ### R2. Canonical owner, batch request (`clarify_batch: true`)
 
@@ -184,7 +231,15 @@ After the candidate's change: <!-- LEAD: post-fix verified state of R1: which pr
   (`tui_gateway/server_requests.py:102-110`, `421-425`); the owner has no counterpart. A viewer that
   reconnects or restarts while a batch card is open is not shown the card again, and its server-held
   drafts are not replayed. They remain recallable once the request settles.
-- After the candidate's change (Desktop declares the flag): <!-- LEAD: post-fix verified state of R2 (native test, run URL) --> pending.
+- After the candidate's changes `[lead]`: (1) the Desktop declares the flag on the senders named in R1's note, so a
+  Desktop turn on this owner is a batch card with server drafts; (2) the owner replays an open batch request,
+  with its questions, locked answers and drafts with revisions, in `session.resume` and `session.events.since`,
+  to an attached viewer entitled exactly like `clarify.lock` (`session:respond`, own session and profile only);
+  settled, cancelled and timed-out requests never reappear. Files: `gateway/session_server_requests.py`,
+  `gateway/session_controls.py`, `tui_gateway/contracts/canonical_sessions.py` (with the regenerated
+  `apps/shared/src/gateway-contract.generated.ts` and `.openrpc.json`) and the renderer merge in
+  `apps/desktop/src/api/canonical-protocol.ts`. Proof: the native reconnect and restart specs in runs
+  39768307967 and 39780275912, plus gateway tests. The consequence described above (no replay) no longer holds.
 
 ### R3. Legacy `tui_gateway` sidecar, in process
 
@@ -204,6 +259,9 @@ After the candidate's change: <!-- LEAD: post-fix verified state of R1: which pr
   block; the record on disk ended with `outcome: "timed_out"`, revision 7.
 - Base tests on Windows `[CI]`: `tests/tui_gateway/test_clarify_drafts.py` 9 passed, 1 failed at line
   `254` (the POSIX `0o600` assertion; section 4.6).
+- After the candidate `[lead]`: this route has native proof. `clarify-drafts-native-serve.spec.ts` ran in runs
+  39768307967 and 39780275912 and covers server plus device protection, reconnect replay (the sidecar's
+  snapshot), recall from a fresh backend and discard.
 
 ### R4. Sidecar with turn isolation (compute-host child)
 
@@ -228,7 +286,15 @@ Pre-fix state, precisely `[code][probe P4]`:
   and shows "Draft kept on this device only" with "The assistant has not seen these drafts."
   (`clarify-drafts.ts:558-562`; `en_clarify.ts:21`, `25`).
 - No test at base mentions drafts and the compute host (`tests/tui_gateway/test_compute_host*.py`).
-- After the candidate's relay: <!-- LEAD: post-fix state of the compute-host relay: commit, test file, what the child persists and which scope it uses --> pending.
+- After the candidate's relay `[lead]`: `clarify.draft` and `clarify.drafts.discard` reach the child that owns the
+  request, with the same entitlement and statuses; the parent's mirror replays drafts on reconnect; a crashed or
+  wedged child answers error 5019, never `ok` with `durable: true`. The child writes under the same `DraftScope`
+  as the parent (the scope R3 describes), so the parent's recall works after the child exits. Files:
+  `tui_gateway/compute_host_bridge.py`, `compute_host.py`, `host_supervisor.py`, `methods_prompt.py` and
+  `server_requests.py`. Proof: the Linux job, 2/2 native plus real-child Python tests. This is a POSIX feature. On
+  Windows it is not supported in practice: `host_supervisor.py` calls `os.kill(pid, 0)` (which is `CTRL_C_EVENT`
+  on Windows), refers to `signal.SIGKILL` (missing there) and relies on `/proc` and `ps` lookups, and the
+  upstream real-child tests are Linux-only. The Windows Desktop's local route never reaches the compute host.
 
 ### R5. Ink TUI and R6. dashboard `/chat`
 
@@ -273,7 +339,9 @@ tap resolves the question at once and a typed reply is the answer (`tools/clarif
 
 A backend without `clarify.draft` answers `-32601`; the Desktop records the owner as unsupported and shows
 "Server autosave unavailable: draft kept on this device only" (`clarify-drafts.ts:565-571`;
-`en_clarify.ts:22`). Recall and discard say so (`clarify-drafts.ts:825-831`, `705-707`).
+`en_clarify.ts:22`). Recall and discard say so (`clarify-drafts.ts:825-831`, `705-707`). After the candidate
+`[lead]` the "method not found" memo lapses after 10 minutes, so the Desktop tries the backend again; the route
+is otherwise unchanged.
 
 ### R11. No card
 
@@ -284,12 +352,14 @@ A backend without `clarify.draft` answers `-32601`; the Desktop records the owne
 ### 3.1 Per-question card routes: exactly which stay device-only and which are unprotected
 
 A per-question card has no server draft registry, so none of these routes can reach the server channel. The
-list is the same after the candidate's Desktop change: only a batch request moves a route out of it.
+list is the same after the candidate's Desktop change `[lead]`: only a batch request moves a route out of it, and
+the change makes the Desktop's own canonical sends batch requests.
 
 | Route | Protection | Why | Evidence |
 |---|---|---|---|
-| Desktop turn from a sender that does not ask for a batch (at base every sender; after the change, any sender in section 6 that still omits the flag) | **Device** | The card is a Desktop card, so it saves to the device; the owner answers `expired` | R1 `[code][probe P6]` |
-| Desktop against an owner that refuses the `clarify_batch` key (an owner older than the key) | **Device** | The owner sends per-question cards | `[inferred]` |
+| Desktop turn from a sender that does not ask for a batch (at base every sender; after the candidate, a sender the change did not touch, section 6) | **Device** | The card is a Desktop card, so it saves to the device; the owner answers `expired` | R1 `[code][probe P6]` |
+| Desktop against an owner that refuses the `clarify_batch` key (an owner older than the key) | **Device** | The owner sends per-question cards. The Desktop resends once without the flag and remembers the owner as unsupported for 10 minutes | `[inferred]` at base; `[lead]` after the candidate |
+| Desktop rewind (Edit, Regenerate, Restore) that is the first action after app launch | **Device** | A rewind offers the flag only to an owner that already accepted it in this app run, and a rewind cannot be safely re-sent | `[lead]` |
 | Desktop against a backend with no `clarify.draft` | **Device** | `-32601`; the owner is remembered as unsupported | `clarify-drafts.ts:565-571`; `en_clarify.ts:22` `[code]` |
 | Desktop attached to a managed-worker execution (kanban card, `--safe-mode`, `--ignore-user-config`, or the opt-in `gateway.managed_workers`) | **Device** | The worker asks per question whatever the flag says | `agent/managed_worker.py:229-249`; `gateway/session_managed_worker.py:46-48`, `389-391` `[code]` |
 | Desktop card whose owner cannot be proven | **None** | No complete scope, so nothing is stored or sent; the card says "Not saved: this form could not confirm which conversation owns it" | `clarify-drafts.ts:197-206`; `.../clarify/pending-drafts.tsx:165-175`; `en_clarify.ts:35-36` `[code]` |
@@ -300,6 +370,8 @@ list is the same after the candidate's Desktop change: only a batch request move
 | Messaging platforms | Not applicable | A tap or a typed reply is the answer; no staged state exists | R9 |
 
 ## 4. Lifecycle gaps
+
+This section describes the base commit. The candidate's disposition for each item is in section 5.
 
 ### 4.1 Session deletion: which routes purge server drafts
 
@@ -319,6 +391,7 @@ list is the same after the candidate's Desktop change: only a batch request move
 | CLI `/exit --delete` | **No** | `hermes_cli/cli_tui_runtime_mixin.py:558` |
 | Automatic prune (`sessions.auto_prune`, default `false`) | **No** | `hermes_state_maintenance.py:478-579`; `hermes_cli/config_defaults.py:2287` |
 | Onboarding chat delete | **No** | `tui_gateway/methods_onboarding.py:264` |
+| `api_server` `DELETE /api/sessions/{id}` | **No** at base: it calls `SessionDB.delete_session`, which reaches the seam below, unwired at base | `gateway/platforms/api_server.py:1668`, `3187-3206`; `hermes_state_sessions.py:1719`, `1783` |
 | Profile delete | Yes, incidentally: the whole home is removed | `hermes_cli/profiles.py:1844` |
 
 The Desktop removes its own device copies after a successful delete, on two paths
@@ -332,8 +405,9 @@ One seam covers every `SessionDB` deletion `[code]`: `emit_session_deleted`
 (`hermes_state_sessions.py:1783`, `1845`, `1934`, `1979`; `hermes_state_maintenance.py:135`, `403`),
 derives the profile home from the store's own path (`:430`), which is the home `DraftScope` uses, and also
 fires for `reason="archive"` (`hermes_state_sessions.py:964`), which must not purge. It is not wired to
-drafts at base. Not covered even by that seam: the `api_server` raw delete
-(`gateway/platforms/api_server.py:3125`) and a whole-profile removal.
+drafts at base. A whole-profile removal needs no purge, because it removes the home. After the candidate
+`[lead]` the seam purges server drafts for every reason except `archive` (delete, empty sweep, prune, ghost prune
+and profile repair; the canonical Desktop delete included), per profile home, failing open (G4).
 
 ### 4.2 Lineage and compression
 
@@ -431,28 +505,37 @@ most 5 questions (`tools/clarify_tool.py:9`). Device copies have no expiry eithe
 
 ## 5. Gap register
 
-Disposition is `fixed in candidate`, `disclosed limitation` or `not applicable`; `Open` means undetermined
-until the lead fills the last column. The values below are what S5 can support today. Change a row to
-`fixed in candidate` only with a commit and a passing test name.
+Disposition is `fixed in candidate`, `partly fixed`, `disclosed limitation`, `not applicable` or `always true`.
+The last column is the candidate's result `[lead]`, with the proof the fact sheet gives; where it names no test,
+the row says so. G13 to G18 were not in the original register: G13 to G15 and G17 are limits and defects found
+after the base analysis, G16 is the standing caveat, and G18 is the baseline run's isolation failure (Appendix B).
 
-| ID | Gap | State at base | Disposition now | Lead fills |
+| ID | Gap | State at base | Disposition | Candidate result and proof `[lead]` |
 |---|---|---|---|---|
-| G1 | Desktop default route gets per-question cards: no server drafts (R1) | Device only; model told nothing | Open | <!-- LEAD: disposition, commit, test, run URL. The checkout held a Desktop opt-in with a refusal ladder (`apps/desktop/src/store/clarify-batch.ts`, `.../use-prompt-actions/submit.ts`); list which senders in section 6 it covers --> |
-| G2 | Per-question routes that stay unprotected after G1: a Desktop sender that omits the flag, an owner that refuses it, older backends, managed workers, ACP, raw WebSocket, `api_server`, Ink (sections 3.1 and 6) | Device or None | Disclosed limitation | <!-- LEAD: confirm the list --> |
-| G3 | Compute-host child-owned requests (R4) | Device only | Open | <!-- LEAD: disposition, commit, test. The checkout held a relay (`tui_gateway/compute_host_bridge.py`, `compute_host.py`, `host_supervisor.py`) and tests (`tests/tui_gateway/test_compute_host_clarify_drafts*.py`); validate them before filling --> |
-| G4 | Deletion routes that do not purge server drafts (4.1) | Only the legacy RPC purges | Disclosed limitation unless the central seam is used | <!-- LEAD: disposition --> |
-| G5 | Older lineage segments and compression rotation (4.2) | Exact id only | Disclosed limitation | <!-- LEAD --> |
-| G6 | Profile rename strands device copies; delete leaves them; clone and export copy drafts (4.3) | As described | Disclosed limitation | <!-- LEAD --> |
-| G7 | Killed turn: durable record, no terminal result, no recall entry point (4.4) | As described | Disclosed limitation | <!-- LEAD --> |
-| G8 | No retention timer and no cap (4.5) | As described | Disclosed limitation | <!-- LEAD --> |
-| G9 | Windows file protection and directory durability (4.6) | POSIX modes not enforced; no directory fsync | Open | <!-- LEAD: commit 91e73cdf changes the store (`make_user_dir`, `atomic_replace`, a deleted-profile guard), moves the `0600` assertion to `tests/tools/test_clarify_drafts_privacy.py` and passes `SYSTEMROOT` to the lock-owner child. Directory fsync on Windows is still skipped. Set the disposition from a Windows run --> |
-| G10 | No owner-side replay of an open batch card (R2) | Card and drafts not re-shown after reconnect or restart | Open | <!-- LEAD: the checkout held an uncommitted owner snapshot (`gateway/session_server_requests.py` `snapshot_fields`, `tests/gateway/test_clarify_open_request_snapshot.py`); set the disposition from what is committed and tested --> |
-| G11 | A closing frame can claim `drafts_durable` (4.7) | As described | Observation | <!-- LEAD: disposition --> |
-| G12 | Messaging platforms, headless, hosted rooms, A2A (R9, R11) | No staged state | Not applicable | |
+| G1 | Desktop default route gets per-question cards: no server drafts (R1) | Device only; model told nothing | **Fixed in candidate** | The Desktop asks for a batch (change 1); senders in R1's note. Proof: Windows native 19/19 in runs 39768307967 and 39780275912 (seed, mixed, failure, reconnect and restart specs) plus gateway tests. Senders the change did not touch: section 6 |
+| G2 | Per-question routes that stay unprotected after G1: a Desktop sender that omits the flag, an owner that refuses it, older backends, managed workers, ACP, raw WebSocket, `api_server`, Ink (sections 3.1 and 6) | Device or None | **Disclosed limitation** | Confirmed: ACP editors, raw WebSocket clients, `api_server`, managed workers, an older canonical gateway that refuses `clarify_batch` and a rewind that is the first action after app launch stay Device-only on the Desktop or unprotected elsewhere. Ink and dashboard `/chat` have no draft code; the classic CLI batches but never sends drafts; the `hermes-bots` plugin's submit paths are untouched |
+| G3 | Compute-host child-owned requests (R4) | Device only | **Fixed in candidate on POSIX; disclosed limitation on Windows** | The relay (change 6). Proof: Linux job, 2/2 native plus real-child Python tests. On Windows it is not supported in practice (`host_supervisor.py`; R4 note); the Windows Desktop's local route never reaches it |
+| G4 | Deletion routes that do not purge server drafts (4.1) | Only the legacy RPC purges | **Fixed in candidate** | Purge at `hermes_state_common.emit_session_deleted` for every reason except `archive`, which is deliberate (change 8). Test names are not itemised in the fact sheet; the purge files are in the lead's Linux Python selection (30 files, 436 passed, 0 failed, 1 skipped) |
+| G5 | Older lineage segments and compression rotation (4.2) | Exact id only | **Partly fixed; remainder disclosed** | Deleting a conversation purges every segment. Sidecar context compression still rotates the session key, so drafts saved under the old key drop out of recall |
+| G6 | Profile rename strands device copies; delete leaves them; clone and export copy drafts (4.3) | As described | **Partly fixed; remainder disclosed** | `hermes profile create --clone-all` no longer copies `clarify_drafts` (change 9). Still true: rename strands device copies, delete leaves them, and `hermes profile export` still carries `clarify_drafts`. Server copies still follow a rename |
+| G7 | Killed turn: durable record, no terminal result, no recall entry point (4.4) | As described | **Disclosed limitation** | A killed or crashed turn leaves a durable draft with outcome null, and no screen offers recall |
+| G8 | No retention timer and no cap (4.5) | As described | **Disclosed limitation** | Still no timer and no file-count cap; recall lists the newest 50; device copies never expire |
+| G9 | Windows file protection and directory durability (4.6) | POSIX modes not enforced; no directory fsync | **Partly fixed; remainder disclosed** | Directories go through `make_user_dir` (the 4.6 elevated-ACL hazard) and files through `atomic_replace` (change 7). Still true: Windows has no POSIX file modes, so privacy rests on the directory ACL, and directory fsync is not possible. The baseline's two Python failures (the `0600` assertion; a missing `SYSTEMROOT` in a child environment) do not recur: Python 395 passed, 0 failed in run 39751372320; 427 passed, 0 failed, 7 skipped in 39768307967; 428 passed, 0 failed, 7 skipped in 39780275912. POSIX-only tests are marked `platforms('posix')` |
+| G10 | No owner-side replay of an open batch card (R2) | Card and drafts not re-shown after reconnect or restart | **Fixed in candidate** | The owner replays an open batch clarify in `session.resume` and `session.events.since` (change 2). Proof: the native reconnect and restart specs, 19/19 in runs 39768307967 and 39780275912, plus gateway tests |
+| G11 | A closing frame can claim `drafts_durable` (4.7) | As described | **Fixed in candidate** | `settle_batch` ignores client-supplied `drafts*` keys (`tools/clarify_batch.py`, change 7). No test name in the fact sheet |
+| G12 | Messaging platforms, headless, hosted rooms, A2A (R9, R11) | No staged state | **Not applicable** | Unchanged |
+| G13 | The owner's `clarify.draft` does its store I/O on the gateway event loop | Not examined at base | **Disclosed limitation** | Measured median 1.8 ms, p95 3.4 ms, max 6.7 ms |
+| G14 | Recalled and discarded card states live in renderer memory and are not pruned when a conversation is deleted | Not examined at base | **Disclosed limitation** | As stated |
+| G15 | The packaged exe started directly, without the launcher | No package at base | **Disclosed limitation** | It uses the real profile as the assistant's working folder and leaves empty `%APPDATA%\HermesBundledCommit<sha7>` folders. It never touches `%APPDATA%\Hermes`, the `hermes://` handler or the per-user gateway rendezvous. The launcher is the supported start |
+| G16 | CI on a clean GitHub runner does not prove compatibility with the owner's laptop, installed app, live server connection or update mechanism | Always true | **Always true** | Stated so in the handoff |
+| G17 | Draft-store edge cases: text that cannot be UTF-8 encoded, a question with a lone surrogate, a save for a deleted named profile, `.draft-*.tmp` residue after a purge | Not examined at base | **Fixed in candidate** | Change 7: un-encodable text is refused with `invalid_params`; a lone-surrogate question no longer breaks save, lock or settle; a save for a deleted profile is `durable: false` and never recreates it; a purge removes the residue. The review's confirmed defects (UTF-8 and lone surrogate, purge residue) are among them. No test names in the fact sheet |
+| G18 | The baseline run created `%APPDATA%\Hermes` (isolation preflight failed) | Observed in the baseline run (Appendix B) | **Fixed in candidate** | Change 10: the Desktop's user-data location is decided before any module reads it; a commit build registers no OS `hermes://` handler and uses its own gateway lock directory. Proof: isolation sentinels unchanged before and after in every Windows run since the fixes |
 
-## 6. What to check when verifying the post-fix state
+## 6. Verification checklist and results
 
-These are things a verification should cover, not claims that they hold.
+The checklist S5 wrote while the candidate was in progress, each item with its result. `[lead]` is the lead's fact
+sheet; `[code]` is a read-only check by S5 at `e7dc1f9b` (`git diff --stat 4a929786..HEAD`); "not covered" means
+the fact sheet has no result and S5 did not check.
 
 - **Every Desktop sender of a prompt-submit shaped request**, because the flag is per admission
   (`gateway/session_cli_turn.py:74-80`) and a turn without it gets per-question cards. At base:
@@ -462,14 +545,27 @@ These are things a verification should cover, not claims that they hold.
   `:61` (`prompt.steer_queued`, `prompt.replace_queued`), and Bot Mode
   (`plugins/hermes-bots/canonical-chat.ts:566`, `.../group-turns.ts:583`, `:606`), all under
   `apps/desktop/src/`.
-- An owner that refuses the key (`invalid_params`) or predates it: the card must say what it keeps.
-- The reconnect and restart cases on the owner route (G10): the card and its drafts are not replayed.
-- Recall on a session that is not attached (4.7).
-- Compute-host: where the child's file lands (the same `tui_gateway` scope the parent reads), that the
-  parent's recall and discard see it, and that settle writes the outcome from the child.
-- That saving or recalling never submits and never grants approval: `clarify.lock` and `clarify.respond`
-  stay the only submitting calls, and Confirm stays the only control that sends them
-  (`apps/desktop/src/components/assistant-ui/clarify/pending.tsx:189-253`).
+  Result: the change covers the composer (`submit.ts`), rewind (`rewind.ts`), `use-session-tile-delegate.ts`,
+  `use-session-actions/index.ts` and `session-create-request.ts` senders, with `submission-destination.ts` and
+  the gate in `apps/desktop/src/store/clarify-batch.ts` `[lead]`. The diff since the base over
+  `discard-lost-prompt.ts` and over `plugins/hermes-bots/canonical-chat.ts` and `group-turns.ts` is empty
+  `[code]`: those senders still carry no flag, and whether a turn admitted through them can raise a clarify card
+  was not examined.
+- **An owner that refuses the key** (`invalid_params`) or predates it: the Desktop resends once without the flag
+  under the same submission id and remembers the owner as unsupported for 10 minutes; the card is then
+  per-question and **Device** `[lead]`. The card's wording for that state was not re-read (not covered).
+- **The reconnect and restart cases on the owner route (G10)**: the owner replays the open batch card and its
+  drafts `[lead]`; the native reconnect and restart specs passed in runs 39768307967 and 39780275912.
+- **Recall on a session that is not attached (4.7)**: not covered; the base observation stands.
+- **Compute-host**: the child writes under the same `DraftScope` as the parent, so the parent's recall works
+  after the child exits; the parent's mirror replays drafts on reconnect; a crashed or wedged child answers 5019
+  `[lead]`. The fact sheet does not itemise whether the child writes the outcome at settle; its proof for this
+  route is the Linux job (2/2 native plus real-child Python tests).
+- **That saving or recalling never submits and never grants approval**: `clarify.lock` and `clarify.respond`
+  stay the only submitting calls, and Confirm stays the only control that sends them (at base:
+  `apps/desktop/src/components/assistant-ui/clarify/pending.tsx:189-253`). No change in the fact sheet adds a
+  submitting path, and the model is told the drafts were not submitted `[lead]`. S5 did not re-read the
+  candidate's renderer to confirm that Confirm is still the only such control (not covered).
 
 ## Appendix A. Probes
 
@@ -697,7 +793,9 @@ shutil.rmtree(TMP, ignore_errors=True)
 
 </details>
 
-## Appendix B. Baseline run facts
+## Appendix B. Actions runs
+
+### B.1 Baseline run
 
 Run [39740118224](https://github.com/troyrowe-resource/hermes-clarify-autosave/actions/runs/39740118224)
 (`workflow_dispatch`, `windows-2025` x64, commit `4a92978697f386d7124e81d463f3a404ac4403fd`, started
@@ -715,5 +813,24 @@ Artifact `clarify-windows-39740118224-1` (id 12408804207, upload digest
 | No real-install location touched | failure: `%APPDATA%\Hermes` existed after the run (absent before) |
 | Native evidence verification, evidence gate | failure (consequence of the above) |
 
-The baseline run is the only Actions run on the candidate branch at the time of writing.
-<!-- LEAD: add later runs here, or point to HANDOFF.md -->
+When this document was first written the baseline was the only Actions run on the candidate branch.
+
+### B.2 Later runs `[lead]`
+
+Numbers the lead read back from the run artifacts; all on standard `windows-2025` x64. The same runs, with the
+baseline, are tabled in `README.md` (Evidence status) and `docs/clarify-candidate/HANDOFF.md` (section 4).
+
+| Run | Commit | Result |
+|---|---|---|
+| [39751372320](https://github.com/troyrowe-resource/hermes-clarify-autosave/actions/runs/39751372320) (discovery, stage native) | `fae57e6c` (work in progress) | Failure. Python 395 passed, 0 failed; launcher self-test passed; isolation passed; native 15 passed, 1 failed (restart: an 8.3 short path against the canonical gateway's lock path), 3 skipped (compute-host not supported on Windows) |
+| [39761924192](https://github.com/troyrowe-resource/hermes-clarify-autosave/actions/runs/39761924192) (full) | `49d95c0d` | Failure. Launcher passed; Linux compute-host 2/2; Windows Python passed; native 17 passed, 1 failed (recall lost when the settled card remounted at turn end: a real bug, fixed), 1 serial skip; package skipped by its gate |
+| [39768307967](https://github.com/troyrowe-resource/hermes-clarify-autosave/actions/runs/39768307967) (stage native) | `6a082a14` | Failure only in the launcher job (PowerShell 5.1: a UTF-8 preamble reached the gateway CLI's stdin, a real bug fixed with stdin NUL). Windows native 19/19, 0 skipped, 0 flaky; Python 28 files, 427 passed, 0 failed, 7 skipped (POSIX-only); Linux compute-host passed |
+| [39779280926](https://github.com/troyrowe-resource/hermes-clarify-autosave/actions/runs/39779280926) | `ae1a547e` | Cancelled by the lead: superseded by a one-line code-health fix |
+| [39780275912](https://github.com/troyrowe-resource/hermes-clarify-autosave/actions/runs/39780275912) (full) | `b770aeda` | Launcher passed on PowerShell 5.1 and 7; Windows native 19 expected, 0 unexpected, 0 skipped, 0 flaky; Windows Python 29 files, 428 passed, 0 failed, 7 skipped (POSIX-only); Linux compute-host native 2/2 and Python passed; isolation passed. **Package failed**: its bundled prepare step timed out at the 25-minute cap on a cold dependency cache (`npm ci` about 9.5 minutes, tools about 3.5, all-extras venv about 8); the budget was raised to 38 minutes in `e7dc1f9b` |
+| [{{RUN7_ID}}]({{RUN7_URL}}) (full) | `{{RUN7_COMMIT}}` | Windows native: {{RUN7_NATIVE}}. Package: {{RUN7_PACKAGE}}. Accept: {{RUN7_ACCEPT}} |
+
+The runs the Candidate result relies on are 39768307967 (stage native, `6a082a14`) and 39780275912 (full,
+`b770aeda`): in both, Windows native passed 19/19 with 0 skipped and 0 flaky, and isolation sentinels were
+unchanged. Run 39780275912 did not finish green, because its package job timed out on a cold dependency cache.
+The acceptance run is {{RUN7_ID}} ({{RUN7_URL}}) on `{{RUN7_COMMIT}}`: Windows native {{RUN7_NATIVE}}, package
+{{RUN7_PACKAGE}}, accept {{RUN7_ACCEPT}}.

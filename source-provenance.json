@@ -11,33 +11,87 @@
     "Inherited workflows and Dependabot configuration omitted from current working tree; exact files retained in initial import commit a80ac875d8d87e4316b09e65ef85097dd09d2906, at reference/upstream-workflows/ and .github/dependabot.yml",
     "Root .gitignore extended to exclude cloud/Windows candidate evidence and tool caches",
     "Added independent cloud task, repository README and manual Windows validation workflow",
-    "LEAD: summarise the candidate-branch adaptations (code, tests, workflow, packaging) once the final commit exists"
+    "Candidate branch: ten meaningful product-code changes after 4a92978697f386d7124e81d463f3a404ac4403fd, summarised in candidate.changes and itemised with their files in docs/clarify-candidate/HANDOFF.md section 1. Many intermediate commits are labelled 'wip: checkpoint' because the session's stop hook required a clean tree while five workers edited; some of those skipped the pre-commit lint and say so in their message",
+    "Manual Windows workflow .github/workflows/clarify-windows.yml and scripts/clarify_ci/** extended to five stages: launcher self-test (Windows PowerShell 5.1 and 7), Windows native, Linux compute-host, package and accept. The package stage builds an unsigned zip with an isolating launcher, publication disabled (electron-builder --publish never), no signing variables",
+    "Added docs/clarify-candidate/ (execution-path inventory with probes, operator handoff). The final commit carries documentation only, so it differs from candidate.tested_commit by documentation only"
   ],
-  "lead_note": "Every string that begins 'LEAD:' is a placeholder. Replace it with a value read back from a real commit or run, or remove the field. Delete this note when none remain. A commit cannot name itself, so the final commit that carries this file is recorded in docs/clarify-candidate/HANDOFF.md.",
   "candidate": {
     "repository": "https://github.com/troyrowe-resource/hermes-clarify-autosave",
     "branch": "candidate/clarify-autosave-windows",
     "main_commit_at_start": "9cbb93849d305369ad060d449cb530f8d3f2a185",
     "first_candidate_commit": "4a92978697f386d7124e81d463f3a404ac4403fd",
-    "tested_commit": "LEAD: the commit the verifying Actions run executed against",
-    "changes": "LEAD: one-line summary of the meaningful candidate changes (detail in docs/clarify-candidate/HANDOFF.md)"
+    "tested_commit": "{{RUN7_COMMIT}}",
+    "final_commit": "The branch head. It carries documentation only and differs from tested_commit by documentation only. A commit cannot name itself, so read it from the branch head. The copy of this file inside the packaged MANIFEST.json is the copy at tested_commit",
+    "changes": "Ten changes: (1) the Desktop asks the canonical gateway for one batch clarify request (clarify_batch on prompt.submit), gated so a legacy hermes serve sidecar and an older gateway are not broken; (2) the canonical gateway replays an open batch clarify, with its locked answers and drafts, in session.resume and session.events.since; (3) a clarify timeout shows one settled card, not two; (4) 'Show drafts saved on the server' and 'Discard drafts' survive the settled card's remount; (5) renderer robustness: offline edits re-sent, expired replies, method-not-found memos, cleared drafts and late acknowledgements; (6) compute-host (turn isolation) child relay for clarify.draft and clarify.drafts.discard, a POSIX feature; (7) draft-store hardening (Windows directory ACLs, atomic replace, deleted named profiles, un-encodable UTF-8, persistence errors, .tmp residue) and settle_batch ignoring client-supplied drafts keys; (8) server drafts purged at session deletion through hermes_state_common.emit_session_deleted for every reason except archive; (9) hermes profile create --clone-all no longer copies clarify_drafts; (10) Desktop isolation: userData decided before modules read it, a commit build never registers the OS hermes:// handler, and a commit build uses its own gateway lock directory. Detail and files: docs/clarify-candidate/HANDOFF.md"
   },
-  "native_windows_status": "not verified: the baseline run failed and no candidate run has passed",
+  "native_windows_status": "Windows native job passed on b770aeda8471d74470222e1bddf38edd0f089371 in run 39780275912 (19 expected, 0 unexpected, 0 skipped, 0 flaky; Python 29 files, 428 passed, 0 failed, 7 skipped as POSIX-only). Acceptance run {{RUN7_ID}} on {{RUN7_COMMIT}}: Windows native {{RUN7_NATIVE}}, package {{RUN7_PACKAGE}}, accept {{RUN7_ACCEPT}}. Every run is listed in native_windows_runs",
   "native_windows_runs": [
     {
       "run_url": "https://github.com/troyrowe-resource/hermes-clarify-autosave/actions/runs/39740118224",
       "commit": "4a92978697f386d7124e81d463f3a404ac4403fd",
       "conclusion": "failure",
-      "role": "baseline of the unmodified candidate; not a pass"
+      "role": "baseline of the unmodified candidate; not a pass",
+      "summary": "Python 234 passed, 2 failed (Windows-only: a POSIX 0600 assertion; SYSTEMROOT missing in a child environment). The native seed spec failed because the Desktop never asked for a batch and got one card per question. The isolation check failed: the baseline created %APPDATA%\\Hermes."
+    },
+    {
+      "run_url": "https://github.com/troyrowe-resource/hermes-clarify-autosave/actions/runs/39751372320",
+      "commit": "fae57e6cc49678c211e3b4ae0ca7f0821af7db7f",
+      "conclusion": "failure",
+      "role": "discovery run (stage native) on a work-in-progress commit",
+      "summary": "Python 395 passed, 0 failed. Launcher self-test passed. Isolation passed. Native 15 passed, 1 failed (restart: an 8.3 short path against the canonical gateway's lock path), 3 skipped (compute-host not supported on Windows)."
+    },
+    {
+      "run_url": "https://github.com/troyrowe-resource/hermes-clarify-autosave/actions/runs/39761924192",
+      "commit": "49d95c0da9f93e4bcfe9a4ea0288ab18ec3e9b66",
+      "conclusion": "failure",
+      "role": "full run",
+      "summary": "Launcher passed. Linux compute-host 2/2. Windows Python passed. Native 17 passed, 1 failed (recall lost when the settled card remounted at turn end: a real bug, fixed), 1 serial skip. Package skipped by its gate."
+    },
+    {
+      "run_url": "https://github.com/troyrowe-resource/hermes-clarify-autosave/actions/runs/39768307967",
+      "commit": "6a082a14af95545a7a97b924245b69ec8a9facb1",
+      "conclusion": "failure",
+      "role": "native-stage run",
+      "summary": "Failed only in the launcher job (Windows PowerShell 5.1 sent a UTF-8 preamble to the gateway CLI's stdin: a real bug, fixed with stdin NUL). Windows native 19/19, 0 skipped, 0 flaky. Python 28 files, 427 passed, 0 failed, 7 skipped (POSIX-only). Linux compute-host passed."
+    },
+    {
+      "run_url": "https://github.com/troyrowe-resource/hermes-clarify-autosave/actions/runs/39779280926",
+      "commit": "ae1a547eb0d4b3a087855779cf1861ca1514183e",
+      "conclusion": "cancelled",
+      "role": "cancelled by the lead because a one-line code-health fix superseded it",
+      "summary": "No result."
+    },
+    {
+      "run_url": "https://github.com/troyrowe-resource/hermes-clarify-autosave/actions/runs/39780275912",
+      "commit": "b770aeda8471d74470222e1bddf38edd0f089371",
+      "conclusion": "package job failed; launcher, Windows native and Linux compute-host jobs passed",
+      "role": "full run",
+      "summary": "Launcher passed on PowerShell 5.1 and 7. Windows native 19 expected, 0 unexpected, 0 skipped, 0 flaky, evidence verdict passed. Windows Python 29 files, 428 passed, 0 failed, 7 skipped (POSIX-only). Linux compute-host native 2/2 and Python passed. Isolation passed. The package job failed: its bundled prepare step timed out at the 25-minute cap on a cold dependency cache (npm ci about 9.5 minutes, tools about 3.5, all-extras venv about 8); the budget was raised to 38 minutes in e7dc1f9b."
+    },
+    {
+      "run_url": "{{RUN7_URL}}",
+      "run_id": "{{RUN7_ID}}",
+      "commit": "{{RUN7_COMMIT}}",
+      "conclusion": "see windows_native, package and accept",
+      "role": "acceptance run (full)",
+      "windows_native": "{{RUN7_NATIVE}}",
+      "package": "{{RUN7_PACKAGE}}",
+      "accept": "{{RUN7_ACCEPT}}"
     }
   ],
   "windows_artifact": {
-    "status": "not produced",
-    "run_url": "LEAD: Actions run that built and tested the artifact",
-    "artifact_name": "LEAD: uploaded artifact name",
-    "sha256": "LEAD: SHA-256 of the exact packaged bytes that were tested",
-    "runtime_prerequisites": "LEAD: what the artifact needs on the machine it runs on",
-    "signing": "unsigned: not Nous-signed and not a verified installer"
+    "status": "package job: {{RUN7_PACKAGE}}; accept job: {{RUN7_ACCEPT}}",
+    "run_url": "{{RUN7_URL}}",
+    "artifact_name": "{{ARTIFACT_NAME}}",
+    "artifact_url": "{{ARTIFACT_URL}}",
+    "artifact_digest": "{{ARTIFACT_DIGEST}}",
+    "zip_sha256": "{{ZIP_SHA256}}",
+    "exe_sha256": "{{EXE_SHA256}}",
+    "downloaded_copy_rehashed": "{{REHASH}}",
+    "retention_days": 7,
+    "runtime_prerequisites": "As recorded by the package job in the package's MANIFEST.json: Windows on x64, built and started only on a GitHub-hosted windows-2025 x64 runner, nothing older tried; no Python, Node, Git or Hermes installation is claimed to be required, because the candidate carries its own interpreter, dependencies, tools and this commit's source; the Microsoft Visual C++ 2015-2022 x64 redistributable is assumed present; about twice the zip size in free disk space; network access only for what is configured. Start it only through Start-HermesClarifyCandidate.cmd, which isolates every state location and refuses to run against a real Hermes home",
+    "publication": "Built with electron-builder --publish never. No GitHub Release or package published",
+    "signing": "unsigned: not Nous-signed and not a verified installer. No certificate was used or installed"
   },
   "production_installed": false
 }
