@@ -16,7 +16,7 @@
  *     with none of the first session's drafts and ends with only its own.
  */
 
-import { MIXED_CLARIFY_QUESTIONS, MIXED_CLARIFY_TRIGGER } from '../../../tests-js/scripts/mock-server'
+import { MIXED_CLARIFY_TRIGGER } from '../../../tests-js/scripts/mock-server'
 
 import {
   clarifyTimeoutConfig,
@@ -24,8 +24,14 @@ import {
   deviceDraftEntries,
   draftStatus,
   liveForms,
+  MIXED_DRAFT_ROWS,
+  MIXED_NOTE,
+  MIXED_QUESTIONS,
+  MIXED_SERVER_DRAFTS,
+  MIXED_TEXT,
   newSession,
   observeDraftStates,
+  openSession,
   pickedChoices,
   questionBlock,
   readAnswers,
@@ -50,15 +56,14 @@ import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fi
 import { expect, test } from './test'
 
 const CLARIFY_TIMEOUT_SECONDS = 45
-const QUESTIONS = MIXED_CLARIFY_QUESTIONS.map(entry => entry.question)
-
-// Unicode (BMP and astral), a newline, an indented line and trailing spaces on a line and at the end.
-const FREE_TEXT = 'Line one ✓ ünï©ödé 🙂  \n  indented second line\nlast line, trailing spaces   '
-const NOTE = 'also: δelta  '
 
 test.describe.configure({ mode: 'serial' })
 
 let fixture: MockBackendFixture | null = null
+const observations: Record<string, unknown> = { timeoutSeconds: CLARIFY_TIMEOUT_SECONDS }
+
+/** The first session's request id: the second and third tests must find its drafts untouched. */
+let firstSession: { requestId: string } | null = null
 
 test.beforeAll(async () => {
   fixture = await setupMockBackend({ extraConfig: clarifyTimeoutConfig(CLARIFY_TIMEOUT_SECONDS) })
@@ -66,12 +71,11 @@ test.beforeAll(async () => {
 })
 
 test.afterAll(async () => {
+  writeObservations('native-mixed-observations.json', observations)
   await fixture?.cleanup()
   fixture = null
 })
 
-/** What the first session's drafts end as; the third test must not see any of it. */
-let firstSession: { requestId: string; rows: { content: string[]; question: string }[] } | null = null
 
 test.describe('clarify drafts (native, mixed question kinds)', () => {
   test('picks, deselections, edits and multiline text survive a real timeout as drafts, never answers; the model is told they are unsubmitted', async () => {
@@ -93,7 +97,7 @@ test.describe('clarify drafts (native, mixed question kinds)', () => {
     await toggleChoice(form, 0, 'Charlie')
     await toggleChoice(form, 0, 'Alpha')
     expect(await pickedChoices(form, 0)).toEqual(['Bravo', 'Charlie'])
-    await typeText(form, 0, NOTE)
+    await typeText(form, 0, MIXED_NOTE)
     expect(await pickedChoices(form, 0)).toEqual(['Bravo', 'Charlie'])
 
     // Q2, single-select: Coffee, replaced by Tea; typing clears the pick; picking Tea again clears the typing.
@@ -108,8 +112,8 @@ test.describe('clarify drafts (native, mixed question kinds)', () => {
 
     // Q3, free text: type, then replace everything with the final multiline text.
     await typeText(form, 2, 'first draft, to be replaced')
-    await retypeText(form, 2, FREE_TEXT)
-    await expect(textField(form, 2)).toHaveValue(FREE_TEXT)
+    await retypeText(form, 2, MIXED_TEXT)
+    await expect(textField(form, 2)).toHaveValue(MIXED_TEXT)
 
     // The card says "saved" only when the server's disk holds the NEWEST revision of every draft.
     await waitForDraftState(form, 'saved')
@@ -121,17 +125,13 @@ test.describe('clarify drafts (native, mixed question kinds)', () => {
     )
 
     expect(stored.gateway).toBe('session_owner')
-    expect(storedDrafts).toEqual({
-      q0: { choices: ['Bravo', 'Charlie'], text: NOTE },
-      q1: { choices: ['Tea'], text: '' },
-      q2: { choices: [], text: FREE_TEXT }
-    })
+    expect(storedDrafts).toEqual(MIXED_SERVER_DRAFTS)
     expect(stored.record.outcome).toBeNull()
 
     // Nothing was submitted: Confirm is still available and the model has received no tool result.
     await expect(form.locator('button[type="submit"]')).toBeEnabled()
     expect(clarifyToolResults(mock, from)).toEqual([])
-    await shot(page, 'mixed-01-live-card.png')
+    await shot(page, 'native-mixed-01-live-card.png')
 
     // The real clarify wait expires (no Confirm was pressed).
     const settled = settledCards(page).filter({ visible: true })
@@ -145,14 +145,8 @@ test.describe('clarify drafts (native, mixed question kinds)', () => {
     answers.forEach(answer => expect(answer).toMatch(/^(No answer|Skipped)$/))
 
     // The drafts are exactly the final state: A deselected, Coffee replaced, "oops" and the first draft gone.
-    const expectedRows = [
-      { content: ['Bravo, Charlie', NOTE], question: QUESTIONS[0] },
-      { content: ['Tea'], question: QUESTIONS[1] },
-      { content: [FREE_TEXT], question: QUESTIONS[2] }
-    ]
-
     const rows = await readDraftRows(settled)
-    expect(rows.map(({ content, question }) => ({ content, question }))).toEqual(expectedRows)
+    expect(rows.map(({ content, question }) => ({ content, question }))).toEqual(MIXED_DRAFT_ROWS)
     rows.forEach(row => {
       expect(row.disk).toBe('confirmed')
       expect(row.transcript).toBe('received')
@@ -166,14 +160,14 @@ test.describe('clarify drafts (native, mixed question kinds)', () => {
 
     await expect(settled.locator('[data-clarify-drafts]')).toHaveAttribute('data-clarify-drafts', 'server')
     await expect(settled.locator('[data-clarify-drafts]')).toContainText('The assistant was told these are drafts, not answers.')
-    await shot(page, 'mixed-02-settled-card.png')
+    await shot(page, 'native-mixed-02-settled-card.png')
 
     // Explicit durable recall: a real `clarify.drafts` read gives back the same thing.
     await settled.getByRole('button', { name: /Show drafts saved on the server/ }).click()
     const recovered = settled.locator('[data-clarify-drafts-recovered="exact"]')
     await recovered.waitFor({ state: 'visible', timeout: 15_000 })
-    expect((await readDraftRows(recovered)).map(({ content, question }) => ({ content, question }))).toEqual(expectedRows)
-    await shot(page, 'mixed-03-recalled.png')
+    expect((await readDraftRows(recovered)).map(({ content, question }) => ({ content, question }))).toEqual(MIXED_DRAFT_ROWS)
+    await shot(page, 'native-mixed-03-recalled.png')
 
     // What the model actually received: drafts beside, never inside, the responses; flagged unsubmitted.
     await expect.poll(() => clarifyToolResults(mock, from).length, { timeout: 30_000 }).toBe(1)
@@ -189,26 +183,26 @@ test.describe('clarify drafts (native, mixed question kinds)', () => {
     expect(told.drafts_request_id).toBe(stored.requestId)
     expect(told.drafts_notice).toMatch(/not answers, not consent/)
     expect(
-      told.drafts?.map(({ question_id, selected_choices, typed_text }) => ({ question_id, selected_choices, typed_text }))
-    ).toEqual([
-      { question_id: 'q0', selected_choices: ['Bravo', 'Charlie'], typed_text: NOTE },
-      { question_id: 'q1', selected_choices: ['Tea'], typed_text: '' },
-      { question_id: 'q2', selected_choices: [], typed_text: FREE_TEXT }
-    ])
+      Object.fromEntries(
+        (told.drafts ?? []).map(({ question_id, selected_choices, typed_text }) => [
+          question_id,
+          { choices: selected_choices, text: typed_text }
+        ])
+      )
+    ).toEqual(MIXED_SERVER_DRAFTS)
 
     // And nothing was ever sent as the user's own words or as an approval.
     const said = userMessages(mock, from)
-    expect(said.filter(text => text.includes(FREE_TEXT) || text.includes('Bravo'))).toEqual([])
+    expect(said.filter(text => text.includes(MIXED_TEXT) || text.includes('Bravo'))).toEqual([])
 
-    firstSession = { requestId: stored.requestId, rows: expectedRows }
-    writeObservations('mixed-observations.json', {
+    firstSession = { requestId: stored.requestId }
+    observations.timeout = {
       deviceKeys: (await deviceDraftEntries(page)).map(entry => entry.key),
       liveStatus,
       modelReceived: told,
       rows,
-      serverRecord: stored.record,
-      timeoutSeconds: CLARIFY_TIMEOUT_SECONDS
-    })
+      serverRecord: stored.record
+    }
   })
 
   test('Confirm is the only submission: the locks reach the model and supersede the drafts on the server and this device', async () => {
@@ -252,6 +246,7 @@ test.describe('clarify drafts (native, mixed question kinds)', () => {
     ])
     expect(told.drafts).toBeUndefined()
     expect(told.drafts_submitted).toBeUndefined()
+    observations.confirm = { modelReceived: told }
 
     // Superseded everywhere: this form's record is gone from the server's disk and from this device;
     // the first session's record is untouched.
@@ -259,7 +254,7 @@ test.describe('clarify drafts (native, mixed question kinds)', () => {
       .poll(() => serverDraftRecords(sandbox.hermesHome).map(entry => entry.requestId), { timeout: 20_000 })
       .toEqual([firstSession!.requestId])
     expect((await deviceDraftEntries(page)).some(entry => entry.key.includes(mine.requestId))).toBe(false)
-    await shot(page, 'mixed-04-confirmed.png')
+    await shot(page, 'native-mixed-04-confirmed.png')
   })
 
   test('a second session asking the identical batch starts with none of the first session\'s drafts and ends with only its own', async () => {
@@ -298,8 +293,8 @@ test.describe('clarify drafts (native, mixed question kinds)', () => {
     await settled.first().waitFor({ state: 'visible', timeout: (CLARIFY_TIMEOUT_SECONDS + 60) * 1000 })
     await waitForFinalSettled(settled, 2)
     expect((await readDraftRows(settled)).map(({ content, question }) => ({ content, question }))).toEqual([
-      { content: ['Coffee'], question: QUESTIONS[1] },
-      { content: ['third-session text'], question: QUESTIONS[2] }
+      { content: ['Coffee'], question: MIXED_QUESTIONS[1] },
+      { content: ['third-session text'], question: MIXED_QUESTIONS[2] }
     ])
 
     // Recall is scoped to THIS request: it returns this session's drafts and none of the first session's.
@@ -313,18 +308,15 @@ test.describe('clarify drafts (native, mixed question kinds)', () => {
     await expect.poll(() => clarifyToolResults(mock, from).length, { timeout: 30_000 }).toBe(1)
     const [told] = clarifyToolResults(mock, from)
     expect(told.drafts?.map(draft => draft.typed_text)).toEqual(['', 'third-session text'])
+    observations.scope = { modelReceived: told, secondRequestId: mine.requestId }
 
     // Going back to the first session, its card still shows its own drafts and nothing of the third's.
-    await page
-      .locator('[data-slot="sidebar"]')
-      .getByRole('button', { name: new RegExp(`${MIXED_CLARIFY_TRIGGER} first`) })
-      .first()
-      .click()
+    await openSession(page, `${MIXED_CLARIFY_TRIGGER} first`)
     const first = settledCards(page).filter({ visible: true })
     await first.first().waitFor({ state: 'visible', timeout: 60_000 })
     await waitForFinalSettled(first, 3)
-    expect((await readDraftRows(first)).map(({ content, question }) => ({ content, question }))).toEqual(firstSession!.rows)
+    expect((await readDraftRows(first)).map(({ content, question }) => ({ content, question }))).toEqual(MIXED_DRAFT_ROWS)
     expect(await first.first().innerText()).not.toContain('third-session text')
-    await shot(page, 'mixed-05-first-session-after-others.png')
+    await shot(page, 'native-mixed-05-first-session-after-others.png')
   })
 })

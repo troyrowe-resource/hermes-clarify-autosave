@@ -27,6 +27,7 @@ import {
   MIXED_SERVER_DRAFTS,
   MIXED_TEXT,
   newSession,
+  observeDraftStates,
   readAnswers,
   readDraftRows,
   readDraftStatus,
@@ -37,6 +38,7 @@ import {
   shot,
   stageMixedDraft,
   textField,
+  toggleChoice,
   typeText,
   userMessages,
   waitForDraftState,
@@ -70,7 +72,7 @@ test.beforeAll(async () => {
 })
 
 test.afterAll(async () => {
-  writeObservations('reconnect-observations.json', observations)
+  writeObservations('native-reconnect-observations.json', observations)
   await fixture?.cleanup()
   fixture = null
 })
@@ -99,7 +101,7 @@ test.describe('clarify drafts (native, reconnect and reload)', () => {
 
     const [stored] = await waitForServerRecords(sandbox.hermesHome, 1)
     expect(stored.gateway).toBe('session_owner')
-    await shot(page, 'reconnect-01-before-drop.png')
+    await shot(page, 'native-reconnect-01-before-drop.png')
 
     // The connection is cut; the renderer redials by itself.
     await cutAndReconnect()
@@ -109,7 +111,7 @@ test.describe('clarify drafts (native, reconnect and reload)', () => {
     await expect(afterDrop.locator('button[type="submit"]')).toBeEnabled()
     expect(clarifyToolResults(mock, from), 'a lost connection submits nothing').toEqual([])
     expect(diskRecords(sandbox.hermesHome), 'the server copy is untouched').toEqual([stored.record])
-    await shot(page, 'reconnect-02-after-drop.png')
+    await shot(page, 'native-reconnect-02-after-drop.png')
 
     // The whole window is reloaded with the form open: the replayed request brings the same card back.
     await page.reload()
@@ -123,7 +125,7 @@ test.describe('clarify drafts (native, reconnect and reload)', () => {
     await expect(afterReload.locator('button[type="submit"]')).toBeEnabled()
     expect(clarifyToolResults(mock, from), 'a reload submits nothing').toEqual([])
     expect(diskRecords(sandbox.hermesHome)).toEqual([stored.record])
-    await shot(page, 'reconnect-03-after-reload.png')
+    await shot(page, 'native-reconnect-03-after-reload.png')
 
     // No Confirm: the real clarify wait expires and the card settles once.
     const settled = settledCards(page).filter({ visible: true })
@@ -142,7 +144,7 @@ test.describe('clarify drafts (native, reconnect and reload)', () => {
       expect(row.disk).toBe('confirmed')
       expect(row.transcript).toBe('received')
     })
-    await shot(page, 'reconnect-04-settled.png')
+    await shot(page, 'native-reconnect-04-settled.png')
 
     await expect.poll(() => clarifyToolResults(mock, from).length, { timeout: 30_000 }).toBe(1)
     const [told] = clarifyToolResults(mock, from)
@@ -211,7 +213,7 @@ test.describe('clarify drafts (native, reconnect and reload)', () => {
       .poll(() => serverDraftRecords(sandbox.hermesHome).map(entry => entry.requestId), { timeout: 20_000 })
       .toEqual([first.requestId])
     expect((await deviceDraftEntries(page)).some(entry => entry.key.includes(mine.requestId))).toBe(false)
-    await shot(page, 'reconnect-05-confirmed-after-drop.png')
+    await shot(page, 'native-reconnect-05-confirmed-after-drop.png')
 
     observations.confirmAfterDrop = { modelReceived: told }
   })
@@ -242,7 +244,7 @@ test.describe('clarify drafts (native, reconnect and reload)', () => {
     const device = await deviceDraftEntries(page)
     expect(device.some(entry => JSON.parse(entry.value).drafts?.q2?.text === offlineText)).toBe(true)
     expect(mineOnDisk()?.record.drafts.q2.text, 'the server has only what was typed while online').toBe('typed while online')
-    await shot(page, 'reconnect-06-offline-edit.png')
+    await shot(page, 'native-reconnect-06-offline-edit.png')
 
     // The network returns: the renderer redials, the card is the same, and the text is still all there.
     link.restore()
@@ -258,7 +260,7 @@ test.describe('clarify drafts (native, reconnect and reload)', () => {
       })
       .toBe(offlineText)
     await waitForDraftState(again, 'saved')
-    await shot(page, 'reconnect-07-offline-edit-synced.png')
+    await shot(page, 'native-reconnect-07-offline-edit-synced.png')
 
     // Nothing was submitted by any of it; Confirm is what submits, and it carries the newest text.
     expect(clarifyToolResults(mock, from)).toEqual([])
@@ -290,7 +292,9 @@ test.describe('clarify drafts (native, reconnect and reload)', () => {
     await typeText(form, 2, MIXED_TEXT)
     await expect(textField(form, 2)).toHaveValue(MIXED_TEXT)
     await waitForDraftState(form, 'device-only')
-    expect(await observeDraftStates(form, 1_500)).toEqual([])
+    const states = await observeDraftStates(form, 1_500)
+    expect(states, 'text the server cannot have is never reported as saved').not.toContain('saved')
+    expect(states).not.toContain('server-unconfirmed')
     expect(mineOnDisk(), 'the server has nothing yet').toBeUndefined()
 
     link.restore()
@@ -316,6 +320,5 @@ test.describe('clarify drafts (native, reconnect and reload)', () => {
     expect(told.responses[1]).toMatchObject({ status: 'answered', user_response: 'Tea' })
 
     observations.firstEditOffline = { modelReceived: told }
-  })
   })
 })

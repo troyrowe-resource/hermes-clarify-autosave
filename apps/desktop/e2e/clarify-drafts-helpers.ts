@@ -129,13 +129,21 @@ export async function newSession(page: Page): Promise<void> {
   await page.locator('button:has-text("New session")').first().click()
 }
 
-/** Open a conversation from the sidebar by its title (a conversation is titled by its first prompt). */
+/** The visible conversation thread (its messages, including every settled card). */
+export const threadViewport = (page: Page): Locator =>
+  page.locator('[data-slot="aui_thread-viewport"]').filter({ visible: true }).first()
+
+/**
+ * Open a conversation from the sidebar by its title (a conversation is titled by its first prompt) and wait until
+ * the thread really shows it: the previous conversation's cards stay on screen until the switch lands.
+ */
 export async function openSession(page: Page, title: string): Promise<void> {
   await page
     .locator('[data-slot="sidebar"]')
     .getByRole('button', { name: new RegExp(title) })
     .first()
     .click()
+  await expect(threadViewport(page)).toContainText(title, { timeout: 30_000 })
 }
 
 export const liveForms = (page: Page): Locator => page.locator('form[data-clarify-batch]')
@@ -366,32 +374,46 @@ export interface ServerDraftRecord {
   requestId: string
 }
 
+/** The entries of a directory the backend may be removing at this very moment: a vanished one is just empty. */
+function listDirectory(dir: string): fs.Dirent[] {
+  try {
+    return fs.readdirSync(dir, { withFileTypes: true })
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT' || (error as NodeJS.ErrnoException).code === 'ENOTDIR') {
+      return []
+    }
+
+    throw error
+  }
+}
+
 /** Every record under `<hermesHome>/clarify_drafts`, read straight from disk (independent of any RPC). */
 export function serverDraftRecords(hermesHome: string): ServerDraftRecord[] {
   const root = path.join(hermesHome, 'clarify_drafts')
   const found: ServerDraftRecord[] = []
 
-  if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
-    return found
-  }
+  for (const gateway of listDirectory(root).filter(entry => entry.isDirectory())) {
+    const gatewayDir = path.join(root, gateway.name)
 
-  for (const gateway of fs.readdirSync(root)) {
-    const gatewayDir = path.join(root, gateway)
+    for (const digest of listDirectory(gatewayDir).filter(entry => entry.isDirectory())) {
+      const dir = path.join(gatewayDir, digest.name)
 
-    if (!fs.statSync(gatewayDir).isDirectory()) {
-      continue
-    }
+      for (const file of listDirectory(dir)) {
+        if (!/^srq-[0-9a-f]{12}\.json$/.test(file.name)) {
+          continue
+        }
 
-    for (const digest of fs.readdirSync(gatewayDir)) {
-      const dir = path.join(gatewayDir, digest)
-
-      for (const name of fs.statSync(dir).isDirectory() ? fs.readdirSync(dir) : []) {
-        if (/^srq-[0-9a-f]{12}\.json$/.test(name)) {
+        try {
           found.push({
-            gateway,
-            record: JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8')),
-            requestId: name.slice(0, -'.json'.length)
+            gateway: gateway.name,
+            record: JSON.parse(fs.readFileSync(path.join(dir, file.name), 'utf8')),
+            requestId: file.name.slice(0, -'.json'.length)
           })
+        } catch (error) {
+          // A record discarded between the listing and the read is simply gone.
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+            throw error
+          }
         }
       }
     }

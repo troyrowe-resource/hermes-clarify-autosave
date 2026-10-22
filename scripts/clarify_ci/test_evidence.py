@@ -432,6 +432,49 @@ def test_isolation_reports_but_never_gates_the_candidates_own_footprint(tmp_path
         evidence.main(["sentinels", "--out", str(before), "--informational", "no-separator"])
 
 
+def test_watched_locations_must_stay_absent_and_the_message_names_the_stage(tmp_path, monkeypatch, capsys):
+    _real_profile(tmp_path, monkeypatch)
+    watch = ["--watch", "APPDATA/HermesBundledCommit0488ac4", "--watch", "LOCALAPPDATA/hermes-clarify-candidate"]
+    before, after = tmp_path / "before.json", tmp_path / "after.json"
+    assert evidence.main(["sentinels", "--out", str(before), *watch]) == 0
+    assert json.loads(before.read_text(encoding="utf-8-sig"))["dir:%APPDATA%/HermesBundledCommit0488ac4"] is False
+    leaked = tmp_path / "LOCALAPPDATA" / "hermes-clarify-candidate"
+    leaked.mkdir()
+    (leaked / "config.yaml").write_text("x", encoding="utf-8")
+    assert evidence.main(["sentinels", "--out", str(after), *watch]) == 0
+    capsys.readouterr()
+    assert evidence.main(["isolation", "--before", str(before), "--after", str(after), "--label", "packaged"]) == 1
+    error = capsys.readouterr().err
+    assert "packaged run created a real-install location: dir:%LOCALAPPDATA%/hermes-clarify-candidate (entries: config.yaml)" in error
+    with pytest.raises(SystemExit):
+        evidence.main(["sentinels", "--out", str(before), "--watch", "no-separator"])
+
+
+def test_a_watched_pattern_catches_whatever_new_entry_it_matches(tmp_path, monkeypatch, capsys):
+    _real_profile(tmp_path, monkeypatch)
+    watch = ["--watch", "APPDATA/Hermes*", "--watch", "LOCALAPPDATA/hermes-*"]
+    before, after = tmp_path / "before.json", tmp_path / "after.json"
+    assert evidence.main(["sentinels", "--out", str(before), *watch]) == 0
+    snapshot = json.loads(before.read_text(encoding="utf-8-sig"))
+    assert snapshot["dir:%APPDATA%/Hermes*"] is False and snapshot["dir:%LOCALAPPDATA%/hermes-*"] is False
+    # Electron's default user data for the product name is a name nobody listed: only the pattern can see it.
+    (tmp_path / "APPDATA" / "Hermes Agent 0488ac4").mkdir()
+    (tmp_path / "APPDATA" / "Roaming-unrelated").mkdir()
+    assert evidence.main(["sentinels", "--out", str(after), *watch]) == 0
+    capsys.readouterr()
+    assert evidence.main(["isolation", "--before", str(before), "--after", str(after), "--label", "packaged"]) == 1
+    assert "real-install location: dir:%APPDATA%/Hermes* (entries: Hermes Agent 0488ac4)" in capsys.readouterr().err
+    entries = json.loads((tmp_path / "after.entries.json").read_text(encoding="utf-8-sig"))
+    assert list(entries) == ["dir:%APPDATA%/Hermes*"], "an unmatched pattern is not listed"
+
+
+def test_verify_messages_name_what_is_being_verified(tmp_path, capsys):
+    code, verdict = _verify(tmp_path, _report("unexpected"), _complete_evidence(tmp_path / "ev"), "--label", "packaged")
+    assert code == 1 and verdict["verdict"] == "failed"
+    captured = capsys.readouterr()
+    assert "packaged evidence:" in captured.err and "packaged evidence verdict: failed" in captured.out
+
+
 def test_gate_titles_the_summary_for_the_stage_that_wrote_it(tmp_path, monkeypatch):
     summary = tmp_path / "summary.md"
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))

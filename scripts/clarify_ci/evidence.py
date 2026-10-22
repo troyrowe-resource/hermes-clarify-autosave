@@ -6,7 +6,7 @@ Each subcommand does one bounded job and exits non-zero when its claim does not 
   stage      create an empty, owned evidence directory (refuses a non-empty one)
   guard      the E2E fixture still sets every isolation flag this workflow relies on,
              and every native spec drives the app through that fixture
-  sentinels  record which real-install locations exist (default homes, protocol keys)
+  sentinels  record which real-install locations exist (default homes, protocol keys, any --watch)
              and, beside the snapshot, the bounded entry names inside any that do
   isolation  fail if a sentinel absent before the native run exists after it
   verify     Playwright JSON + per-spec evidence prove every spec ran once, unretried, and passed
@@ -178,35 +178,62 @@ def _sentinel_key(variable: str, leaf: str) -> str:
     return f"dir:%{variable}%/{leaf}"
 
 
-def _watched(env: dict[str, str], extra: Sequence[tuple[str, str]]) -> dict[str, Path]:
-    found: dict[str, Path] = {}
-    for variable, leaf in SENTINEL_DIRS:
+def _is_pattern(leaf: str) -> bool:
+    return any(char in leaf for char in "*?[")
+
+
+def _watched(env: dict[str, str], extra: Sequence[tuple[str, str]],
+             watch: Sequence[tuple[str, str]] = ()) -> dict[str, tuple[Path, str]]:
+    """Sentinel key -> (parent directory, leaf name or glob pattern) for every watched location."""
+    found: dict[str, tuple[Path, str]] = {}
+    for variable, leaf in (*SENTINEL_DIRS, *watch):
         base = env.get(variable)
         if base:
-            found[_sentinel_key(variable, leaf)] = Path(base) / leaf
+            found[_sentinel_key(variable, leaf)] = (Path(base), leaf)
     for variable, leaf in extra:
         base = env.get(variable)
         if base:
-            found[INFORMATIONAL + _sentinel_key(variable, leaf)] = Path(base) / leaf
+            found[INFORMATIONAL + _sentinel_key(variable, leaf)] = (Path(base), leaf)
     return found
 
 
-def snapshot_sentinels(env: dict[str, str], windows: bool, extra: Sequence[tuple[str, str]] = ()) -> dict[str, bool]:
-    found = {key: path.exists() for key, path in _watched(env, extra).items()}
+def _matches(base: Path, leaf: str) -> list[Path]:
+    """The existing entries a watched leaf names: itself, or what a glob pattern finds (case-insensitive on Windows)."""
+    if _is_pattern(leaf):
+        try:
+            return sorted(base.glob(leaf))
+        except (OSError, ValueError):
+            return []
+    path = base / leaf
+    return [path] if path.exists() else []
+
+
+def snapshot_sentinels(env: dict[str, str], windows: bool, extra: Sequence[tuple[str, str]] = (),
+                       watch: Sequence[tuple[str, str]] = ()) -> dict[str, bool]:
+    found = {key: bool(_matches(base, leaf)) for key, (base, leaf) in _watched(env, extra, watch).items()}
     if windows:
         for subkey in SENTINEL_REGISTRY:
             found[f"HKCU:{subkey}"] = _registry_key_exists(subkey)
     return found
 
 
-def sentinel_entries(env: dict[str, str], extra: Sequence[tuple[str, str]] = ()) -> dict[str, dict[str, object]]:
-    """Bounded top-level entry names of every watched directory that exists, so a leak is diagnosable."""
+def sentinel_entries(env: dict[str, str], extra: Sequence[tuple[str, str]] = (),
+                     watch: Sequence[tuple[str, str]] = ()) -> dict[str, dict[str, object]]:
+    """Bounded entry names for every watched location that exists, so a leak is diagnosable.
+
+    A directory lists what it holds; a pattern lists the entries it matched."""
     detail: dict[str, dict[str, object]] = {}
-    for key, path in _watched(env, extra).items():
-        if not path.is_dir():
+    for key, (base, leaf) in _watched(env, extra, watch).items():
+        matches = _matches(base, leaf)
+        if not matches:
             continue
         try:
-            names = sorted(child.name for child in path.iterdir())
+            if _is_pattern(leaf):
+                names = sorted(path.name for path in matches)
+            elif matches[0].is_dir():
+                names = sorted(child.name for child in matches[0].iterdir())
+            else:
+                continue
         except OSError as error:
             detail[key] = {"entries": [], "truncated": False, "error": str(error)}
             continue
@@ -214,12 +241,12 @@ def sentinel_entries(env: dict[str, str], extra: Sequence[tuple[str, str]] = ())
     return detail
 
 
-def _extra_watch(items: Sequence[str]) -> list[tuple[str, str]]:
+def _extra_watch(items: Sequence[str], option: str = "--informational") -> list[tuple[str, str]]:
     watched = []
     for item in items:
         variable, sep, leaf = item.partition("/")
         if not sep or not variable or not leaf:
-            raise SystemExit(f"--informational expects VARIABLE/leaf, got {item!r}")
+            raise SystemExit(f"{option} expects VARIABLE/leaf, got {item!r}")
         watched.append((variable, leaf))
     return watched
 
@@ -231,9 +258,10 @@ def _entries_path(snapshot: Path) -> Path:
 def sentinels(args) -> int:
     windows = os.name == "nt"
     env, extra = dict(os.environ), _extra_watch(args.informational or [])
-    found = snapshot_sentinels(env, windows, extra)
+    watch = _extra_watch(args.watch or [], "--watch")
+    found = snapshot_sentinels(env, windows, extra, watch)
     _write_json(Path(args.out), found)
-    _write_json(_entries_path(Path(args.out)), sentinel_entries(env, extra))
+    _write_json(_entries_path(Path(args.out)), sentinel_entries(env, extra, watch))
     for key, exists in sorted(found.items()):
         print(f"{'present' if exists else 'absent '} {key}")
     return 0
@@ -255,9 +283,9 @@ def isolation(args) -> int:
         listed = (entries.get(key) or {}).get("entries")
         detail = f" (entries: {', '.join(listed) if listed else 'none listed'})" if key in entries else ""
         if key.startswith(INFORMATIONAL):
-            print(f"::warning::native run left a candidate footprint: {key[len(INFORMATIONAL):]}{detail}", file=sys.stderr)
+            print(f"::warning::{args.label} run left a candidate footprint: {key[len(INFORMATIONAL):]}{detail}", file=sys.stderr)
         else:
-            print(f"::error::native run created a real-install location: {key}{detail}", file=sys.stderr)
+            print(f"::error::{args.label} run created a real-install location: {key}{detail}", file=sys.stderr)
     if not gated:
         print(f"no real-install location appeared ({len(after)} checked)")
     return 1 if gated else 0
@@ -431,8 +459,8 @@ def verify(args) -> int:
     }
     _write_json(Path(args.out), summary)
     for problem in problems:
-        print(f"::error::native evidence: {problem}", file=sys.stderr)
-    print(f"native evidence verdict: {summary['verdict']} ({len(specs)} spec(s): {', '.join(specs) or 'none'})")
+        print(f"::error::{args.label} evidence: {problem}", file=sys.stderr)
+    print(f"{args.label} evidence verdict: {summary['verdict']} ({len(specs)} spec(s): {', '.join(specs) or 'none'})")
     return 1 if problems else 0
 
 
@@ -543,11 +571,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", required=True)
     p.add_argument("--informational", action="append",
                    help="VARIABLE/leaf directory to report but never gate on (the candidate's own footprint)")
+    p.add_argument("--watch", action="append",
+                   help="VARIABLE/leaf directory that must stay absent, beyond the built-in real-install locations")
     p.set_defaults(func=sentinels)
 
     p = sub.add_parser("isolation")
     p.add_argument("--before", required=True)
     p.add_argument("--after", required=True)
+    p.add_argument("--label", default="native", help="what ran between the snapshots, for the messages")
     p.set_defaults(func=isolation)
 
     p = sub.add_parser("verify")
@@ -556,6 +587,7 @@ def main(argv: list[str] | None = None) -> int:
     _add_spec_selection(p, "spec file name (repeatable); default: every spec the glob finds")
     p.add_argument("--expect-observation", action="append",
                    help="slug:dotted.key=value the spec's observations must state (repeatable)")
+    p.add_argument("--label", default="native", help="what is being verified, for the messages")
     p.add_argument("--out", required=True)
     p.set_defaults(func=verify)
 

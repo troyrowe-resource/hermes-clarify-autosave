@@ -44,7 +44,8 @@ def _stamp(**overrides) -> dict:
                "sitePackages": "venv/Lib/site-packages", "commands": {"hermes": f"bin/{EXE}"}}
     stamp = {"schemaVersion": 1, "commit": COMMIT, "dirty": False, "source": "commit-build", "payload": "bundled",
              "distribution": "desktop-app", "updateMechanism": "external", "tag": None, "branch": None,
-             "displayVersion": "0.1.0", "baseVersion": "0.1.0", "builtAt": "2026-10-22T00:00:00Z", "runtime": runtime}
+             "displayVersion": "0.1.0", "baseVersion": "0.1.0", "builtAt": "2026-10-22T00:00:00Z", "runtime": runtime,
+             "bundleEnv": dict(candidate.BUNDLE_ENV)}
     stamp.update(overrides)
     return stamp
 
@@ -112,6 +113,9 @@ def test_audit_accepts_a_bundled_one_commit_build_and_describes_it(tmp_path):
     ({"commit": "f" * 40}, "commit='" + "f" * 40),
     ({"tag": "v1.2.3"}, "tag='v1.2.3'"),
     ({"runtime": {}}, "no completed runtime launch contract"),
+    ({"bundleEnv": {}}, "bundleEnv={}"),
+    ({"bundleEnv": {"HERMES_DATA_DIR_SUFFIX": "-other", "HERMES_HOME": None}}, "'-other'"),
+    ({"bundleEnv": {"HERMES_DATA_DIR_SUFFIX": "-clarify-candidate"}}, "would not stay out of the real Hermes home"),
 ])
 def test_audit_refuses_a_stamp_that_is_not_the_one_commit_bundled_build(tmp_path, overrides, needle):
     problems = _problems(_fake_app(tmp_path, **overrides))
@@ -297,6 +301,75 @@ def test_verify_refuses_members_outside_the_package_folder_and_a_foreign_commit(
     assert any("expected " + "1" * 40 in problem for problem in problems)
     with pytest.raises(candidate.CandidateError, match="not empty"):
         candidate.verify_archive(out / manifest["archive"]["name"], out / "MANIFEST.json", tmp_path / "y", COMMIT)
+
+
+def test_shipped_scripts_and_text_carry_windows_line_endings_that_the_file_list_covers(tmp_path):
+    _, out, manifest = _assemble(tmp_path)
+    name = manifest["package"]
+    with zipfile.ZipFile(out / manifest["archive"]["name"]) as bundle:
+        for member in ("Start-HermesClarifyCandidate.cmd", "Stop-HermesClarifyCandidate.cmd", "README-CANDIDATE.txt",
+                       "launcher/CandidateCommon.ps1"):
+            data = bundle.read(f"{name}/{member}")
+            assert b"\r\n" in data and b"\n" not in data.replace(b"\r\n", b""), f"{member} must be CRLF only"
+    _, problems = candidate.verify_archive(out / manifest["archive"]["name"], out / "MANIFEST.json", tmp_path / "x", COMMIT)
+    assert problems == [], "the digests in FILES.sha256 are those of the CRLF bytes that shipped"
+    assert candidate._crlf(b"a\nb\r\nc") == b"a\r\nb\r\nc"
+
+
+def test_verify_checks_the_digest_the_build_job_reported_by_another_route(tmp_path):
+    _, out, manifest = _assemble(tmp_path)
+    archive = out / manifest["archive"]["name"]
+    _, problems = candidate.verify_archive(archive, out / "MANIFEST.json", tmp_path / "x", COMMIT, manifest["archive"]["sha256"])
+    assert problems == []
+    _, problems = candidate.verify_archive(archive, out / "MANIFEST.json", tmp_path / "y", COMMIT, "0" * 64)
+    assert any("the build job reported" in problem for problem in problems)
+
+
+def _verdict_inputs(tmp_path, **changes):
+    _, out, manifest = _assemble(tmp_path)
+    facts, problems = candidate.verify_archive(out / manifest["archive"]["name"], out / "MANIFEST.json", tmp_path / "x", COMMIT)
+    archive_verify = {"facts": facts, "problems": problems, "verdict": "passed" if not problems else "failed"}
+    evidence = {"verdict": "passed", "problems": [], "specs": {"clarify-drafts-packaged.spec.ts": 1}, "stats": {"expected": 1}}
+    manifest = {**manifest, **changes.pop("manifest", {})}
+    return manifest, {**archive_verify, **changes.pop("archive_verify", {})}, {**evidence, **changes.pop("evidence", {})}
+
+
+def test_the_acceptance_verdict_passes_only_when_every_part_of_it_does(tmp_path):
+    manifest, archive_verify, evidence = _verdict_inputs(tmp_path)
+    steps = {"verify-package": "success", "packaged-e2e": "success", "isolation": "success"}
+    verdict = candidate.build_verdict(manifest, archive_verify, evidence, steps)
+    assert verdict["passed"] is True and verdict["problems"] == []
+    assert verdict["commit"] == COMMIT and verdict["archive"]["sha256"] == manifest["archive"]["sha256"]
+    assert verdict["signing"] == "unsigned" and verdict["publication"] == "disabled"
+    assert "any other machine" in verdict["scope"]
+
+    failed = candidate.build_verdict(manifest, archive_verify, evidence, {**steps, "isolation": "failure"})
+    assert failed["passed"] is False and any("isolation was failure" in problem for problem in failed["problems"])
+    skipped = candidate.build_verdict(manifest, archive_verify, evidence, {**steps, "packaged-e2e": "skipped"})
+    assert skipped["passed"] is False
+
+    bad_evidence = candidate.build_verdict(manifest, archive_verify, {**evidence, "verdict": "failed", "problems": ["x"]}, steps)
+    assert bad_evidence["passed"] is False and "packaged evidence: x" in bad_evidence["problems"]
+
+    other_zip = {**archive_verify, "facts": {**archive_verify["facts"], "sha256": "0" * 64}}
+    assert not candidate.build_verdict(manifest, other_zip, evidence, steps)["passed"]
+    assert not candidate.build_verdict(manifest, {**archive_verify, "verdict": "failed"}, evidence, steps)["passed"]
+
+
+def test_cli_verdict_and_bundle_env(tmp_path, capsys):
+    manifest, archive_verify, evidence = _verdict_inputs(tmp_path)
+    paths = {name: tmp_path / f"{name}.json" for name in ("manifest", "archive", "evidence")}
+    for key, data in (("manifest", manifest), ("archive", archive_verify), ("evidence", evidence)):
+        paths[key].write_text(json.dumps(data), encoding="utf-8")
+    out = tmp_path / "acceptance-verdict.json"
+    args = ["verdict", "--manifest", str(paths["manifest"]), "--archive-verify", str(paths["archive"]),
+            "--evidence-verdict", str(paths["evidence"]), "--out", str(out)]
+    assert candidate.main(args + ["--outcome", "packaged-e2e=success"]) == 0
+    assert json.loads(out.read_text(encoding="utf-8"))["passed"] is True
+    assert candidate.main(args + ["--outcome", "packaged-e2e=failure"]) == 1
+    assert "packaged-e2e was failure" in capsys.readouterr().err
+    assert candidate.main(["bundle-env"]) == 0
+    assert json.loads(capsys.readouterr().out) == candidate.BUNDLE_ENV == {"HERMES_DATA_DIR_SUFFIX": "-clarify-candidate", "HERMES_HOME": None}
 
 
 def test_cli_audit_assemble_and_verify_round_trip(tmp_path, monkeypatch, capsys):

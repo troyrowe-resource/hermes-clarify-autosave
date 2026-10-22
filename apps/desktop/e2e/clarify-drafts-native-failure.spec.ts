@@ -64,7 +64,7 @@ test.beforeAll(async () => {
 })
 
 test.afterAll(async () => {
-  writeObservations('failure-observations.json', observations)
+  writeObservations('native-failure-observations.json', observations)
   await fixture?.cleanup()
   fixture = null
 })
@@ -105,7 +105,7 @@ test.describe('clarify drafts (native, failed persistence)', () => {
       q2: { choices: [], text: TEXT }
     })
     await expect(form.locator('button[type="submit"]')).toBeEnabled()
-    await shot(page, 'failure-01-server-fails-live.png')
+    await shot(page, 'native-failure-01-server-fails-live.png')
 
     // The real timeout.
     const settled = settledCards(page).filter({ visible: true })
@@ -128,7 +128,7 @@ test.describe('clarify drafts (native, failed persistence)', () => {
     await settled.getByRole('button', { name: /Show drafts saved on the server/ }).click()
     await expect(settled.locator('[data-clarify-drafts-recall="none"]')).toBeVisible({ timeout: 15_000 })
     await expect(settled.locator('[data-clarify-drafts-recovered="exact"]')).toHaveCount(0)
-    await shot(page, 'failure-02-server-fails-settled.png')
+    await shot(page, 'native-failure-02-server-fails-settled.png')
 
     await expect.poll(() => clarifyToolResults(mock, from).length, { timeout: 30_000 }).toBe(1)
     const [told] = clarifyToolResults(mock, from)
@@ -171,7 +171,7 @@ test.describe('clarify drafts (native, failed persistence)', () => {
     expect(serverDraftRecords(fixture!.sandbox.hermesHome)).toEqual([])
     expect(await deviceDraftEntries(page)).toEqual([])
     await expect(textField(form, 2)).toHaveValue(TEXT)
-    await shot(page, 'failure-03-both-fail-live.png')
+    await shot(page, 'native-failure-03-both-fail-live.png')
 
     const settled = settledCards(page).filter({ visible: true })
     await settled.first().waitFor({ state: 'visible', timeout: (CLARIFY_TIMEOUT_SECONDS + 60) * 1000 })
@@ -180,7 +180,7 @@ test.describe('clarify drafts (native, failed persistence)', () => {
     await expect(settled.locator('[data-clarify-drafts-memory-only]')).toContainText(
       'This device could not store these drafts: only this window holds them. Copy them now.'
     )
-    await shot(page, 'failure-04-both-fail-settled.png')
+    await shot(page, 'native-failure-04-both-fail-settled.png')
 
     observations.bothFail = { liveState: live, statesObserved: states }
   })
@@ -202,7 +202,7 @@ test.describe('clarify drafts (native, failed persistence)', () => {
 
     const [stored] = await waitForServerRecords(sandbox.hermesHome, 1)
     expect(stored.record.drafts.q2.text).toBe(TEXT)
-    await shot(page, 'failure-05-device-fails-live.png')
+    await shot(page, 'native-failure-05-device-fails-live.png')
 
     const settled = settledCards(page).filter({ visible: true })
     await settled.first().waitFor({ state: 'visible', timeout: (CLARIFY_TIMEOUT_SECONDS + 60) * 1000 })
@@ -210,7 +210,7 @@ test.describe('clarify drafts (native, failed persistence)', () => {
     const rows = await readDraftRows(settled)
     expect(rows.map(row => row.content)).toEqual([['Bravo'], ['Tea'], [TEXT]])
     rows.forEach(row => expect(row.disk).toBe('confirmed'))
-    await shot(page, 'failure-06-device-fails-settled.png')
+    await shot(page, 'native-failure-06-device-fails-settled.png')
 
     observations.deviceFails = { liveState: live, rows }
   })

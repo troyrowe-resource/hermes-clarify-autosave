@@ -227,8 +227,10 @@ def _compute_host_respond(
     never a result: nothing is ever reported saved that the child did not confirm."""
     try:
         ack = _get_compute_host_supervisor().respond(sid, payload, **({} if timeout is None else {"timeout": timeout}))
-    except Exception as exc:
-        return None, _err(rid, 5019, f"compute-host {what} failed: {exc}")
+    except (RuntimeError, OSError, ValueError, queue.Empty) as exc:
+        # What the supervisor raises for a child it cannot reach: not running or respawn disabled (RuntimeError), a
+        # broken or closed stdin pipe (OSError, ValueError), no ack before the deadline (queue.Empty).
+        return None, _err(rid, 5019, f"compute-host {what} failed: {str(exc) or type(exc).__name__}")
     if ack.get("type") in {"respond.error", "error"}:
         return None, _err(rid, 5019, str(ack.get("message") or f"compute-host {what} failed"))
     response = ack.get("response")

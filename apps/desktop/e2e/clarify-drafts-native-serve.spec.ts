@@ -17,8 +17,6 @@
 import { writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config'
 import { MIXED_CLARIFY_TRIGGER, type MockServer, startMockServer } from '../../../tests-js/scripts/mock-server'
 
-import { createCoreSandbox, type CoreSandbox } from './core/harness'
-import { remoteEnv, type RemoteBackend, startRemoteBackend } from './core/remote-helpers'
 import {
   clarifyTimeoutConfig,
   clarifyToolResults,
@@ -49,6 +47,8 @@ import {
   waitForServerRecords,
   writeObservations
 } from './clarify-drafts-helpers'
+import { type CoreSandbox, createCoreSandbox } from './core/harness'
+import { type RemoteBackend, remoteEnv, startRemoteBackend } from './core/remote-helpers'
 import {
   buildAppEnv,
   createSandbox,
@@ -97,7 +97,7 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
   observations.backendLogTail = backend?.logTail()
-  writeObservations('serve-observations.json', observations)
+  writeObservations('native-serve-observations.json', observations)
   await client?.app.close().catch(() => undefined)
   await backend?.kill()
   preserveSandboxLogs(backendBox)
@@ -125,7 +125,7 @@ test.describe('clarify drafts (native, remote hermes serve backend)', () => {
     const [stored] = await waitForServerRecords(backendBox.hermesHome, 1)
     expect(stored.gateway).toBe('tui_gateway')
     expect(stored.record.drafts.q2.text).toBe(MIXED_TEXT)
-    await shot(page, 'serve-01-live-card.png')
+    await shot(page, 'native-serve-01-live-card.png')
 
     // A cut connection: the renderer redials and the sidecar replays the open request with its drafts.
     const opened = link.opened()
@@ -136,7 +136,7 @@ test.describe('clarify drafts (native, remote hermes serve backend)', () => {
     await expect(afterDrop.locator('button[type="submit"]')).toBeEnabled()
     expect(clarifyToolResults(mock, from)).toEqual([])
     expect(serverDraftRecords(backendBox.hermesHome).map(entry => entry.record)).toEqual([stored.record])
-    await shot(page, 'serve-02-after-drop.png')
+    await shot(page, 'native-serve-02-after-drop.png')
 
     // A reload of the whole window with the form open.
     await page.reload()
@@ -146,7 +146,7 @@ test.describe('clarify drafts (native, remote hermes serve backend)', () => {
     expect([null, 'saved']).toContain((await readDraftStatus(afterReload)).state)
     await expect(afterReload.locator('button[type="submit"]')).toBeEnabled()
     expect(clarifyToolResults(mock, from)).toEqual([])
-    await shot(page, 'serve-03-after-reload.png')
+    await shot(page, 'native-serve-03-after-reload.png')
 
     // No Confirm: the backend's real clarify wait expires.
     const settled = settledCards(page).filter({ visible: true })
@@ -160,7 +160,7 @@ test.describe('clarify drafts (native, remote hermes serve backend)', () => {
     answers.forEach(answer => expect(answer).toMatch(/^(No answer|Skipped)$/))
     const rows = await readDraftRows(settled)
     expect(rows.map(({ content, question }) => ({ content, question }))).toEqual(MIXED_DRAFT_ROWS)
-    await shot(page, 'serve-04-settled.png')
+    await shot(page, 'native-serve-04-settled.png')
 
     await expect.poll(() => clarifyToolResults(mock, from).length, { timeout: 30_000 }).toBe(1)
     const [told] = clarifyToolResults(mock, from)
@@ -212,13 +212,13 @@ test.describe('clarify drafts (native, remote hermes serve backend)', () => {
     await recovered.waitFor({ state: 'visible', timeout: 20_000 })
     expect((await readDraftRows(recovered)).map(({ content, question }) => ({ content, question }))).toEqual(MIXED_DRAFT_ROWS)
     expect(serverDraftRecords(backendBox.hermesHome).map(entry => entry.requestId)).toEqual([stored.requestId])
-    await shot(page, 'serve-05-fresh-backend-recalled.png')
+    await shot(page, 'native-serve-05-fresh-backend-recalled.png')
 
     // Explicit discard: the record leaves the backend's disk, and nothing is ever submitted.
     await settled.getByRole('button', { name: 'Discard drafts' }).click()
     await expect(settled.locator('[data-clarify-drafts-discarded]')).toHaveText('Removed from the server.')
     await expect.poll(() => serverDraftRecords(backendBox.hermesHome), { timeout: 20_000 }).toEqual([])
-    await shot(page, 'serve-06-discarded.png')
+    await shot(page, 'native-serve-06-discarded.png')
 
     expect(submittedDraftText(mock, requestsBefore, [MIXED_TEXT, 'Bravo'])).toEqual([])
     expect(clarifyToolResults(mock, 0)).toHaveLength(1)

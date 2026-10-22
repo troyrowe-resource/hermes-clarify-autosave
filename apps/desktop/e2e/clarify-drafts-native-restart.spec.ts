@@ -65,7 +65,7 @@ test.beforeAll(async () => {
 })
 
 test.afterAll(async () => {
-  writeObservations('restart-observations.json', observations)
+  writeObservations('native-restart-observations.json', observations)
   await fixture?.cleanup()
   fixture = null
 })
@@ -133,7 +133,7 @@ test.describe('clarify drafts (native, restart, fresh backend and discard)', () 
     const { page } = fixture!
     await openSession(page, `${MIXED_CLARIFY_TRIGGER} restart-first`)
     const { rows, settled } = await expectSettledDrafts(page)
-    await shot(page, 'restart-01-app-restarted.png')
+    await shot(page, 'native-restart-01-app-restarted.png')
 
     // The device copy survived the restart and is exactly the final state.
     const device = await deviceDraftEntries(page)
@@ -150,7 +150,7 @@ test.describe('clarify drafts (native, restart, fresh backend and discard)', () 
 
     // The explicit recall reads the backend's durable record and agrees.
     expect(await recallRows(settled)).toEqual(MIXED_DRAFT_ROWS)
-    await shot(page, 'restart-02-recalled.png')
+    await shot(page, 'native-restart-02-recalled.png')
 
     // Reopening, recalling and restarting submitted nothing: no new user words, no new clarify result.
     expect(submittedDraftText(mock, requestsBeforeRestart, DRAFT_NEEDLES)).toEqual([])
@@ -187,7 +187,7 @@ test.describe('clarify drafts (native, restart, fresh backend and discard)', () 
 
     expect(await recallRows(settled)).toEqual(MIXED_DRAFT_ROWS)
     expect(serverDraftRecords(sandbox.hermesHome).map(entry => entry.requestId)).toEqual([firstRequestId])
-    await shot(page, 'restart-03-fresh-backend-recalled.png')
+    await shot(page, 'native-restart-03-fresh-backend-recalled.png')
 
     expect(submittedDraftText(mock, requestsBefore, DRAFT_NEEDLES)).toEqual([])
     expect(clarifyToolResults(mock, 0)).toHaveLength(1)
@@ -211,7 +211,7 @@ test.describe('clarify drafts (native, restart, fresh backend and discard)', () 
     const settled = settledCards(page).filter({ visible: true })
     await settled.getByRole('button', { name: 'Discard drafts' }).click()
     await expect(settled.locator('[data-clarify-drafts-discarded]')).toHaveText('Removed from this device and the server.')
-    await shot(page, 'restart-04-discarded.png')
+    await shot(page, 'native-restart-04-discarded.png')
 
     // Gone from the backend's disk and from this device: only this request's, never the other conversation's.
     await expect
@@ -241,7 +241,7 @@ test.describe('clarify drafts (native, restart, fresh backend and discard)', () 
     await expect(reopened.locator('[data-clarify-drafts-recall="none"]')).toBeVisible({ timeout: 20_000 })
     await expect(reopened.locator('[data-clarify-drafts-recovered="exact"]')).toHaveCount(0)
     expect((await deviceDraftEntries(after)).some(entry => entry.key.includes(second.requestId))).toBe(false)
-    await shot(after, 'restart-05-discard-survives-fresh-backend.png')
+    await shot(after, 'native-restart-05-discard-survives-fresh-backend.png')
 
     // The first conversation, never discarded, is still intact on the new backend.
     await openSession(after, `${MIXED_CLARIFY_TRIGGER} restart-first`)

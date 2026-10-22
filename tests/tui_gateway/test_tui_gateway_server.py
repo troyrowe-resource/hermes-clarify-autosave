@@ -20520,12 +20520,12 @@ def test_speak_text_with_barge_no_monitor_when_voice_mode_off(monkeypatch):
 
 
 def _capture_server_request(monkeypatch, result):
-    """Stub the server-request send and capture (method, sid, params, timeout)."""
+    """Stub the server-request send and capture (method, sid, params, timeout, qids, draft_scope)."""
     from tui_gateway import server_requests
     captured = {}
 
-    def fake_send(method, sid, params, *, timeout, qids=None):
-        captured.update(method=method, sid=sid, params=params, timeout=timeout, qids=qids)
+    def fake_send(method, sid, params, *, timeout, qids=None, draft_scope=None):
+        captured.update(method=method, sid=sid, params=params, timeout=timeout, qids=qids, draft_scope=draft_scope)
         return result
 
     monkeypatch.setattr(server_requests, "send", fake_send)
@@ -20546,7 +20546,7 @@ def test_clarify_callback_uses_configured_timeout(monkeypatch):
     assert captured["method"] == "clarify" and captured["sid"] == "sid-1"
     assert captured["timeout"] == 42
     assert captured["params"] == {"questions": questions}
-    assert captured["qids"] == ["q0"]
+    assert captured["qids"] == ["q0"] and captured["draft_scope"] is None  # no stored session behind "sid-1"
 
 
 @pytest.mark.parametrize(

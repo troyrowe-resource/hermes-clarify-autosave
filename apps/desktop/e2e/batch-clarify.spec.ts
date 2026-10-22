@@ -120,6 +120,7 @@ test.describe('batch clarify card', () => {
     const settled = page
       .locator('[data-clarify-settled]')
       .filter({ hasText: SINGLE_BATCH_CLARIFY_QUESTIONS[0]!.question })
+
     await settled.waitFor({ state: 'visible', timeout: 30_000 })
     await expect(settled.getByText(SINGLE_BATCH_CLARIFY_QUESTIONS[0]!.question)).toBeVisible()
     await expect(settled.getByText('Espresso', { exact: true })).toBeVisible()
