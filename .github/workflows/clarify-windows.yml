@@ -5,6 +5,9 @@ name: Clarify drafts - Windows native evidence
 # native Windows Playwright spec (e2e/clarify-drafts-native.spec.ts) against a
 # synthetic model server. It produces evidence only. It does not package, sign,
 # install or publish anything; a user-ready Windows package is later work.
+#
+# Candidate branch candidate/clarify-autosave-windows runs this first unchanged as
+# a Windows environment baseline; later candidate commits extend it.
 
 on:
   workflow_dispatch:
