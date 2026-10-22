@@ -106,7 +106,7 @@ The server draft channel (`clarify.draft`, `clarify.drafts`, `clarify.drafts.dis
 | Profile rename does not migrate device draft copies (they are stranded); server copies follow the renamed directory. Profile delete leaves device copies. Profile clone and export carry unsent drafts | Verified in code | Disclosed limitation |
 | A crashed or killed turn leaves a durable draft without a terminal transcript result, and no screen offers to recall it | Verified by probe and code | Disclosed limitation |
 | Drafts have no retention timer and no cap on file count | Verified in code | Disclosed limitation |
-| On the session owner route an open batch card and its server drafts are not replayed after a reconnect or restart | Read from code | Disclosed limitation <!-- LEAD: confirm after the native reconnect test --> |
+| On the session owner route an open batch card and its server drafts are not replayed after a reconnect or restart | Read from code | Pending <!-- LEAD: fixed in candidate (commit, test, native reconnect run) or disclosed limitation --> |
 | Windows: POSIX file modes are not enforced and directories are not fsynced; the baseline run's restart test failed on its `0600` assertion | Observed in the baseline run | Disclosed limitation <!-- LEAD: say what happened to the failing assertion --> |
 | Windows CI is not proof of compatibility with a particular installed app, laptop configuration or live server route | Always true | Always true |
 

@@ -34,11 +34,9 @@ const requestFor = (requestId: string, sessionId: string): ClarifyRequest => ({
 
 const stage = (draft: string) => ({ choices: [], draft })
 
-// Separators, escapes and NULs a naive `a/b/c/d` key would let one identity masquerade as another.
-const GATEWAYS = ['connection:a', 'connection:a/b', 'profile-pool', 'ambient:local']
-const PROFILES = ['default', 'work', 'work/x', 'work%2Fx']
-const SESSIONS = ['stored:s1', 'runtime:s1', 'stored:s1/x', 'stored:s1\u0000x']
-const REQUESTS = ['srq-aaaaaaaaaaaa', 'srq-aaaaaaaaaaaa/x', 'srq-aaaaaaaaaaaa%2Fx']
+// Parts built from the same few segments, with the separators, escapes and NULs a naive `a/b/c/d` key lets
+// one identity masquerade as another by moving a boundary: ('a/b', 'c', ...) vs ('a', 'b/c', ...).
+const PARTS = ['a', 'b', 'a/b', 'b/a', 'a%2Fb', 'a\u0000b']
 
 interface Identity {
   requestId: string
@@ -46,10 +44,10 @@ interface Identity {
   text: string
 }
 
-const IDENTITIES: Identity[] = GATEWAYS.flatMap(gateway =>
-  PROFILES.flatMap(profile =>
-    SESSIONS.flatMap(session =>
-      REQUESTS.map(requestId => ({
+const IDENTITIES: Identity[] = PARTS.flatMap(gateway =>
+  PARTS.flatMap(profile =>
+    PARTS.flatMap(session =>
+      PARTS.map(requestId => ({
         requestId,
         scope: { gateway, profile, session },
         text: `draft for ${JSON.stringify([gateway, profile, session, requestId])}`
@@ -102,7 +100,7 @@ describe('clarify draft identity: scope keys never cross', () => {
   it('every gateway, profile, session and request combination has its own storage key', () => {
     const keys = IDENTITIES.map(keyOf)
 
-    expect(IDENTITIES.length).toBeGreaterThan(100)
+    expect(IDENTITIES.length).toBe(PARTS.length ** 4)
     expect(new Set(keys).size).toBe(IDENTITIES.length)
   })
 

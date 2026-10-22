@@ -8,9 +8,11 @@ Base for every `path:line` citation: commit `4a92978697f386d7124e81d463f3a404ac4
 commit of `candidate/clarify-autosave-windows`; read a file with `git show 4a929786:<path>`). Lines
 drift as candidate commits land, so re-read a citation against the commit you are checking.
 
-Status: written by worker S5 on 2026-10-22 while other workers were still changing the candidate.
-Anything that depends on the candidate's own changes is a placeholder: search for `LEAD:`. A route is
-"fixed in candidate" only when a commit and a named passing test say so. This document does not.
+Status: written by worker S5 on 2026-10-22 while other workers were still changing the candidate. Their
+commits and uncommitted edits landed in the shared checkout during the work; S5 did not review or verify
+them, and every citation stays pinned to the base. Anything that depends on the candidate's own changes is a
+placeholder: search for `LEAD:`. A route is "fixed in candidate" only when a commit and a named passing test
+say so. This document does not.
 
 ## 0. How to read the evidence
 
@@ -67,7 +69,7 @@ wait times out. Detail and citations per route are in section 3.
 |---|---|---|---|---|---|---|
 | R1 | Desktop, canonical local gateway (`gateway ensure`, WebSocket `native_dial`), unmodified Desktop: one card per question | **Device** | No: `clarify.draft` answers `expired` | Recall finds nothing; discard answers `missing`; the Desktop still removes its own copy | `timed_out`, `notice: "[user did not respond within Nm]"`, every response `unanswered`, no `drafts` | <!-- LEAD: post-fix verified state of R1 (commit, test, run) --> Pending |
 | R2 | Same owner, turn flagged `clarify_batch: true` (classic CLI at base; the Desktop once the candidate's change lands): one batch request, `session_owner` store | CLI: **None** (it never sends drafts). Desktop: **Server** plus Device once it declares the flag | Yes `[probe P8]`: `ok`, `durable: true` | Yes, for an attached `session:respond` viewer | `timed_out` plus `drafts`, `drafts_submitted: false`, `drafts_notice`, `drafts_request_id`, `drafts_durable`; no `notice` | <!-- LEAD: post-fix verified state of R2 --> Pending |
-| R3 | Desktop on a legacy transport (no `native_dial`), `tui_gateway` sidecar in process: one batch request, `tui_gateway` store | **Server** plus Device | Yes `[probe P4b]` | Yes (by request id, or the session's list) | As R2 | None planned |
+| R3 | Desktop on a legacy transport (no `native_dial`), `tui_gateway` sidecar in process: one batch request, `tui_gateway` store | **Server** plus Device (the Desktop only; the Ink TUI on the same sidecar is R5) | Yes `[probe P4b]` | Yes (by request id, or the session's list) | As R2 | None planned |
 | R4 | R3 with `dashboard.turn_isolation: true` (default `false`): the compute-host child owns the request | **Device** | No: the parent answers `expired` `[probe P4]` | Recall finds nothing; discard answers `missing` | `timed_out`, no `drafts`, no `notice` `[probe P4]` | <!-- LEAD: post-fix verified state of the compute-host relay (commit, test) --> Pending |
 | R5 | Ink TUI (`hermes --tui`): batch (sidecar) or per-question (shared gateway) | **None** | No: no client code | Not offered | Sidecar: `timed_out`, locked answers only. Shared gateway: as R1 | None planned |
 | R6 | Dashboard `/chat` (embeds the Ink TUI in a PTY; `web/src` has no clarify code) | **None** | No | Not offered | As R5 | None planned |
@@ -429,16 +431,16 @@ until the lead fills the last column. The values below are what S5 can support t
 
 | ID | Gap | State at base | Disposition now | Lead fills |
 |---|---|---|---|---|
-| G1 | Desktop default route gets per-question cards: no server drafts (R1) | Device only; model told nothing | Open | <!-- LEAD: disposition, commit, test, run URL --> |
+| G1 | Desktop default route gets per-question cards: no server drafts (R1) | Device only; model told nothing | Open | <!-- LEAD: disposition, commit, test, run URL. The checkout held a Desktop opt-in with a refusal ladder (`apps/desktop/src/store/clarify-batch.ts`, `.../use-prompt-actions/submit.ts`); list which senders in section 6 it covers --> |
 | G2 | Per-question routes that stay unprotected after G1: a Desktop sender that omits the flag, an owner that refuses it, older backends, managed workers, ACP, raw WebSocket, `api_server`, Ink (sections 3.1 and 6) | Device or None | Disclosed limitation | <!-- LEAD: confirm the list --> |
-| G3 | Compute-host child-owned requests (R4) | Device only | Open | <!-- LEAD: disposition, commit, test --> |
+| G3 | Compute-host child-owned requests (R4) | Device only | Open | <!-- LEAD: disposition, commit, test. The checkout held a relay (`tui_gateway/compute_host_bridge.py`, `compute_host.py`, `host_supervisor.py`) and tests (`tests/tui_gateway/test_compute_host_clarify_drafts*.py`); validate them before filling --> |
 | G4 | Deletion routes that do not purge server drafts (4.1) | Only the legacy RPC purges | Disclosed limitation unless the central seam is used | <!-- LEAD: disposition --> |
 | G5 | Older lineage segments and compression rotation (4.2) | Exact id only | Disclosed limitation | <!-- LEAD --> |
 | G6 | Profile rename strands device copies; delete leaves them; clone and export copy drafts (4.3) | As described | Disclosed limitation | <!-- LEAD --> |
 | G7 | Killed turn: durable record, no terminal result, no recall entry point (4.4) | As described | Disclosed limitation | <!-- LEAD --> |
 | G8 | No retention timer and no cap (4.5) | As described | Disclosed limitation | <!-- LEAD --> |
-| G9 | Windows file protection and directory durability (4.6) | POSIX modes not enforced; no directory fsync | Disclosed limitation | <!-- LEAD: also record the fate of the failing baseline assertion --> |
-| G10 | No owner-side replay of an open batch card (R2) | Card and drafts not re-shown after reconnect or restart | Disclosed limitation | <!-- LEAD: confirm after the native reconnect test --> |
+| G9 | Windows file protection and directory durability (4.6) | POSIX modes not enforced; no directory fsync | Open | <!-- LEAD: commit 91e73cdf changes the store (`make_user_dir`, `atomic_replace`, a deleted-profile guard), moves the `0600` assertion to `tests/tools/test_clarify_drafts_privacy.py` and passes `SYSTEMROOT` to the lock-owner child. Directory fsync on Windows is still skipped. Set the disposition from a Windows run --> |
+| G10 | No owner-side replay of an open batch card (R2) | Card and drafts not re-shown after reconnect or restart | Open | <!-- LEAD: the checkout held an uncommitted owner snapshot (`gateway/session_server_requests.py` `snapshot_fields`, `tests/gateway/test_clarify_open_request_snapshot.py`); set the disposition from what is committed and tested --> |
 | G11 | A closing frame can claim `drafts_durable` (4.7) | As described | Observation | <!-- LEAD: disposition --> |
 | G12 | Messaging platforms, headless, hosted rooms, A2A (R9, R11) | No staged state | Not applicable | |
 
