@@ -42,9 +42,10 @@ def _gone(pid: int) -> bool:
         return True
 
 
-def _describe(proc: psutil.Process) -> str:
+def _describe(pid: int) -> str:
     try:
-        return f"{proc.name()} ppid={proc.ppid()} {' '.join(proc.cmdline())[:160]}"
+        proc = psutil.Process(pid)
+        return f"{proc.name()} ppid={proc.ppid()} created={proc.create_time()} {' '.join(proc.cmdline())[:160]}"
     except psutil.Error as exc:
         return repr(exc)
 
@@ -52,14 +53,15 @@ def _describe(proc: psutil.Process) -> str:
 def _tree(pid: int) -> dict[int, str]:
     """``pid`` and its descendants, taken while alive: a venv launcher's host is its child."""
     root = psutil.Process(pid)
-    return {proc.pid: _describe(proc) for proc in (root, *root.children(recursive=True))}
+    return {proc.pid: _describe(proc.pid) for proc in (root, *root.children(recursive=True))}
 
 
 def _wait_all_gone(tree: dict[int, str], timeout: float = 10.0) -> None:
     try:
         wait_until(lambda: all(map(_gone, tree)), timeout=timeout)
     except AssertionError:
-        survivors = {pid: desc for pid, desc in tree.items() if not _gone(pid)}
+        # Described again now: a different create time is a recycled pid, not a survivor.
+        survivors = {pid: f"was {was}; now {_describe(pid)}" for pid, was in tree.items() if not _gone(pid)}
         raise AssertionError(f"still running after {timeout}s: {survivors}") from None
 
 
