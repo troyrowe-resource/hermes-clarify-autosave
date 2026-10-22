@@ -52,6 +52,8 @@ jobs:
           extras: '[]'
           test-environment: 'true'
           archive-inputs: 'false'
+          cache: 'false'
+          cache-python: 'false'
 
       # -rs prints every skip reason, so the log shows which OS-marked tests this host ran.
       - name: Supervisor real-process tests
