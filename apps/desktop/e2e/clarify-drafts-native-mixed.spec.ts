@@ -115,6 +115,7 @@ test.describe('clarify drafts (native, mixed question kinds)', () => {
     await waitForDraftState(form, 'saved')
     const liveStatus = await readDraftStatus(form)
     const [stored] = await waitForServerRecords(sandbox.hermesHome, 1)
+
     const storedDrafts = Object.fromEntries(
       Object.entries(stored.record.drafts).map(([qid, draft]) => [qid, { choices: draft.choices, text: draft.text }])
     )

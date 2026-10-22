@@ -5015,6 +5015,7 @@ export interface CanonicalSnapshot {
   execution_generation: number
   pending: CanonicalPendingAdmission[]
   prompts: CanonicalPendingPrompt[]
+  open_requests?: OpenRequestEntry[] | null
   info: CanonicalSnapshotInfo
   pending_connection?: ConnectionRequestPayload | null
   todo_state?: TodoState | null
@@ -5169,6 +5170,7 @@ export interface CanonicalEventsResult {
   truncated: boolean
   snapshot_required: boolean
   count: number
+  open_requests?: OpenRequestEntry[] | null
 }
 export interface CanonicalReplayEvent {
   type: string
