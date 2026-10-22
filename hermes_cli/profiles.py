@@ -83,9 +83,11 @@ _CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] =  frozenset({
 # ``cron`` is scheduled work bound to the source profile and its origin channel: a clone
 # that inherits jobs.json runs every job twice (two gateways, same job ids, double spend,
 # duplicate deliveries) the moment its gateway starts. The empty dir is recreated below.
+# ``clarify_drafts`` is unsent per-session text keyed by the SOURCE's sessions, which the clone
+# does not inherit: copies would be unreachable orphans that no recall shows and no delete purges.
 _CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
     "state.db", "state.db-wal", "state.db-shm", "sessions", "backups", "state-snapshots", "checkpoints",
-    "cron",
+    "cron", "clarify_drafts",
 })
 
 # Marker written by `hermes profile create --no-skills`. When present at a profile root,
