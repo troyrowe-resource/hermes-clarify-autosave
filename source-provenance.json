@@ -76,6 +76,13 @@
       "summary": "Launcher passed on PowerShell 5.1 and 7. Windows native 19 expected, 0 unexpected, 0 skipped, 0 flaky, evidence verdict passed. Windows Python 29 files, 428 passed, 0 failed, 7 skipped (6 POSIX-only, 1 symlink-privilege). Linux compute-host native 2/2 and Python 2 files, 39 passed. Isolation passed. The package job failed: with the 38-minute budget the cold prepare finished (28 min 23 s), electron-builder built the bundled app and the audit passed it (115,772 files, 6,528,066,077 bytes), but assembly refused the deflate-1 zip at 3,224,609,056 bytes, 3.4 MB over the 3072 MiB guard; the guard was raised to 4096 MiB in 1ba6a599. No candidate was uploaded and the accept job did not run."
     },
     {
+      "run_url": "https://github.com/troyrowe-resource/hermes-clarify-autosave/actions/runs/39800682655",
+      "commit": "f19f3d69004b29a1929a6cb0ec139463481eb021",
+      "conclusion": "accept job failed; launcher, Windows native, Linux compute-host and package jobs passed",
+      "role": "full run",
+      "summary": "Launcher passed on PowerShell 5.1 and 7. Windows native 19 expected, 0 unexpected, 0 skipped, 0 flaky. Windows Python 29 files, 428 passed, 0 failed, 7 skipped (6 POSIX-only, 1 symlink-privilege). Linux compute-host native 2/2 and Python 2 files, 39 passed. Isolation passed. Package: the package job passed in 56 min 22 s of its 60 (a cold dependency cache: its runner had image 20261007.264.1, for which no cache existed yet; prepare 30 min 56 s, build 16 min 18 s) and uploaded HermesClarifyCandidate-f19f3d6-win-x64.zip (3,224,699,779 bytes, SHA-256 2cc19ec5...; artifact digest ea29f72c...); the lead downloaded it and re-hashed the artifact, the zip and all 115,778 listed files: all matched. Accept failed: the archive check passed and the direct (no-launcher) run passed, but the launcher run's spec refused the shipped launcher's contract before starting the app: the job's own DECOY_HOME variable carried the decoy Hermes home into the candidate's environment, because the launcher filtered inherited variables by name only. Fixed in 026e3ec6: the launcher now withholds any inherited variable whose value is, or lies inside, a real Hermes location."
+    },
+    {
       "run_url": "{{RUN7_URL}}",
       "run_id": "{{RUN7_ID}}",
       "commit": "{{RUN7_COMMIT}}",
