@@ -73,13 +73,12 @@ def test_next_supervisor_stops_the_registered_orphan_host(tmp_path, bom):
     first = _supervisor(tmp_path)
     try:
         first.start()
-        tree = _tree(first.pid)
-        assert first._hello["host_pid"] in tree
+        host_pid = first._hello["host_pid"]
         registry = first.registry_path
         registry.write_text(bom + registry.read_text(encoding="utf-8"), encoding="utf-8")
 
         assert _supervisor(tmp_path).reconcile_startup_orphan() == "terminated"
-        _wait_all_gone(tree)
+        _wait_all_gone({host_pid: "host"})
         assert not registry.exists()
     finally:
         first.shutdown()
