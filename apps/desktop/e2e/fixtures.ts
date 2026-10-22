@@ -54,6 +54,9 @@ const CREDENTIAL_SUFFIXES: string[] = [
 ]
 
 const CREDENTIAL_NAMES = new Set([
+  // Config directories that hold another tool's login (Claude Code, Codex): the sandboxed backend must not find them.
+  'CLAUDE_CONFIG_DIR',
+  'CODEX_HOME',
   'ANTHROPIC_BASE_URL',
   'ANTHROPIC_TOKEN',
   'AWS_ACCESS_KEY_ID',
@@ -346,8 +349,8 @@ function writeEmptyConfig(hermesHome: string): void {
  *    (we want the dev checkout at REPO_ROOT)
  *  - HERMES_DESKTOP_HERMES_ROOT → REPO_ROOT (dev checkout resolution)
  *  - HERMES_DESKTOP_APP_NAME → unique-ish per test (avoids single-instance lock)
- *  - HOME (and on Windows USERPROFILE / HOMEDRIVE / HOMEPATH / HERMES_GATEWAY_LOCK_DIR, see `sandboxHomeEnv`)
- *    → the sandbox is the process's home
+ *  - HOME, HERMES_GATEWAY_LOCK_DIR (and on Windows USERPROFILE / HOMEDRIVE / HOMEPATH), see `sandboxHomeEnv`
+ *    → the sandbox is the process's home and holds its host-wide gateway lock
  *  - XDG_RUNTIME_DIR → ensure Electron has a writable runtime dir on Linux
  */
 export function buildAppEnv(sandbox: Sandbox, extra: Record<string, string> = {}): Record<string, string> {
@@ -369,11 +372,11 @@ export function buildAppEnv(sandbox: Sandbox, extra: Record<string, string> = {}
     HERMES_HOME: sandbox.hermesHome,
     HERMES_DESKTOP_USER_DATA_DIR: sandbox.userDataDir,
     HERMES_DESKTOP_IGNORE_EXISTING: '1',
-    // One `hermes serve` per host, and profile roots are HOME-anchored
-    // (`~/.hermes/profiles`, the default profile's own home): without both of
-    // these a local e2e run attaches to the developer's running backend or
-    // lists and writes their real profiles, and chats through their real
-    // model and state.db instead of the sandbox + mock provider. CI never has
+    // One `hermes serve` per host (its rendezvous lock lives under the OS user's state dir, not under HERMES_HOME),
+    // and anything that resolves the NATIVE Hermes home (`~/.hermes`) instead of HERMES_HOME is anchored to HOME
+    // (with HERMES_HOME set, the profiles root follows it: hermes_constants.get_default_hermes_root): without both
+    // of these a local e2e run attaches to the developer's running backend or reads and writes their real home,
+    // and chats through their real model and state.db instead of the sandbox + mock provider. CI never has
     // either, so only local runs ever took that path.
     HERMES_DESKTOP_ISOLATED_BACKEND: '1',
     HOME: sandbox.root,
@@ -544,6 +547,7 @@ export async function setupMockBackend(options: MockBackendOptions = {}): Promis
     cleanup: async () => {
       // `fixture.app`, not the first launch: `relaunchDesktop` replaces it in place.
       await fixture.app.close().catch(() => undefined)
+
       // The gateway outlives the app (attach mode): stop it, then keep its logs for the evidence artifact
       // (pass or fail), then drop the sandbox. A daemon that cannot be stopped still gets its logs kept and its
       // sandbox dropped, and then fails the teardown.

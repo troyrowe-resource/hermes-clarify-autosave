@@ -23,7 +23,9 @@ describe('sandboxHomeEnv', () => {
     expect(env).not.toHaveProperty('HOMEPATH')
   })
 
-  test.each(['linux', 'darwin'] as const)('%s is isolated by HOME alone and adds nothing', platform => {
-    expect(sandboxHomeEnv('/tmp/hermes-e2e-mock-0.42', platform)).toEqual({})
+  test.each(['linux', 'darwin'] as const)('%s is isolated by HOME and only pins the host lock directory', platform => {
+    expect(sandboxHomeEnv('/tmp/hermes-e2e-mock-0.42', platform)).toEqual({
+      HERMES_GATEWAY_LOCK_DIR: '/tmp/hermes-e2e-mock-0.42/gateway-locks'
+    })
   })
 })
