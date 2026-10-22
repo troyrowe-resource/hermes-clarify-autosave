@@ -187,6 +187,11 @@ Assert-Case 'starts in a sandbox outside every real location and prints a launch
     $run = Invoke-Launcher 'Start-HermesClarifyCandidate.ps1' @('-Root', $sandbox, '-EmitEnvironment') @{
         OPENAI_API_KEY = 'sk-test'; GITHUB_TOKEN = 'ghs_test'; HERMES_FOO = 'leak'; NODE_OPTIONS = '--inspect'; ELECTRON_RUN_AS_NODE = '1'; PYTHONPATH = 'C:\leak'
         HERMES_GATEWAY_LOCK_DIR = 'C:\real-locks'; XDG_STATE_HOME = 'C:\real-state'; CODEX_HOME = 'C:\real-codex'; CLAUDE_CONFIG_DIR = 'C:\real-claude'
+        # Real locations under names Hermes never reads, spelled differently from the launcher's own forms.
+        REAL_HOME_POINTER = ((Join-Path $real '.hermes').Replace('\', '/').ToUpperInvariant() + '/')
+        REAL_HOME_CHILD = (Join-Path $realLocal 'hermes\skills')
+        # Not real locations: a parent of them, a URL and a list.
+        WORK_PARENT = $work; SOME_URL = 'https://example.com/C:/x'; SOME_LIST = ($real + '\.hermes;C:\Windows')
     }
     if ($run.Code -ne 0) { return "exit $($run.Code): $($run.Err.Trim())" }
     $script:contract = $run.Out.Trim() | ConvertFrom-Json
@@ -211,6 +216,8 @@ if ($contract) {
         foreach ($name in @('OPENAI_API_KEY', 'GITHUB_TOKEN', 'HERMES_FOO', 'NODE_OPTIONS', 'ELECTRON_RUN_AS_NODE', 'PYTHONPATH', 'XDG_STATE_HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR')) { if ($envMap.ContainsKey($name)) { return "$name leaked into the candidate" } }
         if (-not $envMap.ContainsKey('SystemRoot') -or -not $envMap.ContainsKey('PATH')) { return 'SystemRoot or PATH was dropped; Windows programs and Python sockets need them' }
         foreach ($path in $contract.refusedLocations) { if ($envMap.Values -contains $path) { return "a real location $path is in the candidate environment" } }
+        foreach ($name in @('REAL_HOME_POINTER', 'REAL_HOME_CHILD')) { if ($envMap.ContainsKey($name)) { return "$name=$($envMap[$name]) names a real location and reached the candidate" } }
+        foreach ($name in @('WORK_PARENT', 'SOME_URL', 'SOME_LIST')) { if (-not $envMap.ContainsKey($name)) { return "$name names no real location but was withheld" } }
     }
     Assert-Case 'the real locations it guards are the fake real profile, not the sandbox' {
         $locations = @($contract.refusedLocations)

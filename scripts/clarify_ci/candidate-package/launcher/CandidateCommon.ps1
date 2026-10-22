@@ -10,7 +10,8 @@
 #   * the sandbox is never, never inside, and never an ancestor of a real Hermes location of the
 #     current user (default home, legacy home, installed app's user data and updater cache, any
 #     HERMES_HOME the user or the machine has set);
-#   * the candidate gets a fresh environment: no credentials, no HERMES_*/PYTHON*/NODE*/ELECTRON* leakage.
+#   * the candidate gets a fresh environment: no credentials, no HERMES_*/PYTHON*/NODE*/ELECTRON* leakage, and no
+#     inherited variable, whatever its name, whose value is or lies inside a real Hermes location.
 # Exit codes: 2 unsafe location, 3 the executable does not match MANIFEST.json, 4 not a candidate-shaped build,
 # 5 start failure. Stop never refuses: it only needs the package folder (see Stop-HermesClarifyCandidate.ps1).
 
@@ -124,6 +125,15 @@ function Find-ContainedPath {
         }
     }
     return $null
+}
+
+function Test-NamesRealLocation {
+    # Whether an environment value is a local path that is, or lies inside, one of the real locations' spellings.
+    # Values that are not one rooted path (flags, URLs, ;-lists) never match; one Windows refuses to parse is no path.
+    param([string]$Value, [string[]]$RealForms)
+    if ($Value -notmatch '^(?:[A-Za-z]:[\\/]|\\\\)') { return $false }
+    try { $forms = Get-PathForms $Value } catch { return $false }
+    return [bool](Find-ContainedPath $RealForms $forms)
 }
 
 function Format-Resolved {
@@ -309,12 +319,16 @@ function Get-CandidateEnvironment {
     # credential store outside the profile (XDG_*, CODEX_HOME, CLAUDE_CONFIG_DIR, provider settings).
     $drop = '^(?:PYTHON|VIRTUAL_ENV|CONDA|NODE_|NPM_|ELECTRON_|VITE_|UV_|PM_|HERMES_|GITHUB_|RUNNER_|ACTIONS_|XDG_|CLAUDE_|CODEX_|ANTHROPIC_|OPENAI_|OPENROUTER_|NOUS_|GEMINI_|GOOGLE_)'
     $secret = '(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)'
+    # A real location is withheld under any name too: the candidate is never handed one, read by Hermes or not.
+    $realForms = @()
+    foreach ($real in (Get-RealHermesLocations)) { $realForms += $real.Forms }
     $environment = @{}
     $inherited = [System.Environment]::GetEnvironmentVariables('Process')
     foreach ($name in $inherited.Keys) {
         $value = [string]$inherited[$name]
         $upper = ([string]$name).ToUpperInvariant()
         if ([string]::IsNullOrEmpty($value) -or $upper -match $drop -or $upper -match $secret) { continue }
+        if (Test-NamesRealLocation $value $realForms) { continue }
         $environment[[string]$name] = $value
     }
     $sha7 = $Commit.Substring(0, 7)
