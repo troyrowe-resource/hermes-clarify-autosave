@@ -57,7 +57,10 @@ scripts/run_tests.sh -v --tb=long                       # pytest flags pass thro
       return home
   ```
   Tests that `patch.object(Path, "home", ...)` must ALSO set `HERMES_HOME` — code reads the
-  env var, not `Path.home()/.hermes`.
+  env var, not `Path.home()/.hermes`. A child spawned with a rebuilt env that drops
+  `HERMES_HOME` seeds the real root on import: give it
+  `tests._fixtures.child_home.throwaway_home_env(tmp_path / "home")`. The autouse
+  `_forbid_creating_real_hermes_root` fails a test during which a real root appears.
 
 ## Don't fake the host OS
 

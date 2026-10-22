@@ -1518,6 +1518,29 @@ def _forbid_real_hermes_home_io(monkeypatch, request):
     HomeIOGuard(lambda: _REAL_HERMES_ROOT_CANDIDATES, lambda: _REAL_INSTALLED_GUI_APPS).install(monkeypatch)
 
 
+@pytest.fixture(autouse=True)
+def _forbid_creating_real_hermes_root():
+    """Fail a test during which a real Hermes root that did not exist came into being.
+
+    The guard above sees this process only. A child spawned with a rebuilt env keeps HOME, loses
+    the HERMES_HOME redirect, and its first load_config() seeds the real root's skeleton
+    (SOUL.md, sessions/, cron/, ...). Not waived by allow_real_home_io: probing the real root is
+    some tests' job, creating it is never one. scripts/run_tests_parallel.py repeats the check
+    for the whole run, where a file retry would otherwise find the root present and pass.
+    """
+    absent = [root for root in _REAL_HERMES_ROOT_CANDIDATES if not os.path.lexists(root)]
+    yield
+    created = [str(root) for root in absent if os.path.lexists(root)]
+    if created:
+        pytest.fail(
+            f"TEST BUG: the real Hermes root {', '.join(created)} did not exist before this test and does now.\n"
+            "A child spawned without HERMES_HOME seeds the root of the HOME it inherits: give it\n"
+            "tests._fixtures.child_home.throwaway_home_env(tmp_path / 'home'). Under a parallel run a\n"
+            "concurrent file may be the one: re-run this file alone after removing the root.",
+            pytrace=False,
+        )
+
+
 @pytest.fixture
 def real_bash() -> str:
     """A bash that runs shell scripts: on the Windows runners PATH resolves ``bash`` to

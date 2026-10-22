@@ -39,7 +39,8 @@ Environment:
                          ';' also works and drive letters are handled;
                          default: 'tests')
 
-Exit code: 0 if every file's pytest exited 0; 1 otherwise.
+Exit code: 0 if every file's pytest exited 0; 1 otherwise, and 1 when the
+run created a real Hermes root (``~/.hermes``) that was absent at its start.
 """
 
 from __future__ import annotations
@@ -1660,5 +1661,32 @@ def main() -> int:
     return 0
 
 
+def _real_hermes_roots() -> list[Path]:
+    """The platform-default Hermes roots of the HOME this run was given (as tests/conftest.py)."""
+    roots = [Path.home() / ".hermes"]
+    if os.environ.get("LOCALAPPDATA"):
+        roots.append(Path(os.environ["LOCALAPPDATA"]) / "hermes")
+    return roots
+
+
+def _main_refusing_created_roots() -> int:
+    """``main()``, failed when the run created a real Hermes root absent at its start.
+
+    tests/conftest.py fails the test during which a root appears, but the file
+    retry then finds it present and passes: a deterministic leak laundered
+    into a green FLAKY run.
+    """
+    absent = [root for root in _real_hermes_roots() if not os.path.lexists(root)]
+    rc = main()
+    created = [str(root) for root in absent if os.path.lexists(root)]
+    if not created:
+        return rc
+    print()
+    print(f"=== ✗ this run created the real Hermes root {', '.join(created)} — NOT a pass ===")
+    print("  A test spawned a child without HERMES_HOME; the test failures above name it.")
+    print("  Remove the root before re-running, or later runs cannot see the leak.")
+    return 1
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(_main_refusing_created_roots())

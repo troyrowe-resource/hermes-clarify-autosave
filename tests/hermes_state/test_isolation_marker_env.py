@@ -20,6 +20,7 @@ import sys
 from pathlib import Path
 
 import hermes_state_guard
+from tests._fixtures.child_home import throwaway_home_env
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -54,15 +55,19 @@ def _spawn_probe(env: dict) -> dict:
     return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
-def _minimal_env(**extra) -> dict:
-    """A rebuilt-from-scratch child env — the residual-bypass pattern."""
+def _minimal_env(home: Path, **extra) -> dict:
+    """A rebuilt-from-scratch child env — the residual-bypass pattern — homed in *home*.
+
+    No ``HERMES_HOME``, so the child's import-time ``load_config()`` seeds the platform root of
+    its home; a throwaway one keeps that out of the developer's real home. The probe resolves
+    the production root from the same home, so the guard still faces the child's real root.
+    """
     env = {
         "PATH": os.environ.get("PATH", ""),
-        "HOME": os.environ.get("HOME", ""),
         "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""),  # Windows needs it
-        "LOCALAPPDATA": os.environ.get("LOCALAPPDATA", ""),
     }
     env = {k: v for k, v in env.items() if v}
+    env.update(throwaway_home_env(home))
     env.update(extra)
     return env
 
@@ -85,11 +90,11 @@ def test_no_signals_reports_production(monkeypatch):
     assert hermes_state_guard._running_under_pytest() is False
 
 
-def test_child_with_rebuilt_env_keeping_marker_refuses_production_db():
+def test_child_with_rebuilt_env_keeping_marker_refuses_production_db(tmp_path):
     """THE regression: a child whose env was rebuilt from scratch (PYTEST_*
     stripped, HERMES_HOME lost) but which keeps the marker must still refuse
     to open the production state.db."""
-    env = _minimal_env(HERMES_TEST_ISOLATION="/tmp/pytest-isolation-root")
+    env = _minimal_env(tmp_path / "home", HERMES_TEST_ISOLATION="/tmp/pytest-isolation-root")
     result = _spawn_probe(env)
     assert result["armed"] is True
     assert result["fired"] is True, (
@@ -98,10 +103,11 @@ def test_child_with_rebuilt_env_keeping_marker_refuses_production_db():
     )
 
 
-def test_child_bypass_env_disarms_guard_even_with_marker():
+def test_child_bypass_env_disarms_guard_even_with_marker(tmp_path):
     """The sanctioned escape hatch for children that genuinely need a real
     DB: HERMES_STATE_DB_GUARD_BYPASS=1, not marker-stripping."""
     env = _minimal_env(
+        tmp_path / "home",
         HERMES_TEST_ISOLATION="/tmp/pytest-isolation-root",
         HERMES_STATE_DB_GUARD_BYPASS="1",
     )

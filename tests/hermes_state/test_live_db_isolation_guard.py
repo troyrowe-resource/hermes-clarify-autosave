@@ -23,6 +23,7 @@ import hermes_state
 from gateway.config import GatewayConfig
 from gateway.session import SessionStore
 from hermes_state import SessionDB
+from tests._fixtures.child_home import throwaway_home_env
 
 # These probe the live-DB guard against the real root on purpose.
 pytestmark = pytest.mark.allow_real_home_io
@@ -154,6 +155,10 @@ class TestSubprocessChildCovered:
             for k, v in os.environ.items()
             if k not in ("HERMES_HOME", "PYTEST_PLUGINS", "PYTHONPATH")
         }
+        # A throwaway home: without HERMES_HOME the child's import-time
+        # load_config() seeds the platform root of its home, and both its
+        # argless SessionDB() and the guard resolve "production" from it.
+        env.update(throwaway_home_env(tmp_path / "home"))
         env["PYTEST_CURRENT_TEST"] = "tests/fake.py::test_child (call)"
         env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2])
         code = (
