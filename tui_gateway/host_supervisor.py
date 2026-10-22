@@ -9,7 +9,6 @@ import json
 import logging
 import os
 import queue
-import signal
 import subprocess
 import sys
 import threading
@@ -19,6 +18,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from hermes_cli._subprocess_compat import (
+    IS_WINDOWS, bounded_git_probe, kill_process_tree, windows_detach_flags_without_breakaway)
 from hermes_constants import get_hermes_home
 from tools.environments.local import hermes_subprocess_env
 
@@ -80,18 +81,10 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def _check_output(argv: list[str], **kwargs: Any) -> str:
-    """Stripped stdout of a short subprocess, or ``""`` on any failure."""
-    with contextlib.suppress(Exception):
-        return subprocess.check_output(
-            argv, stdin=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace", stderr=subprocess.DEVNULL,
-            timeout=2, **kwargs).strip()
-    return ""
-
-
 def _build_sha() -> str:
-    """HEAD sha or ``"unknown"``; shared with ``compute_host`` so the hello handshake agrees."""
-    return _check_output(["git", "rev-parse", "HEAD"], cwd=str(_repo_root())) or "unknown"
+    """HEAD sha or ``"unknown"``; shared with ``compute_host`` so the hello handshake agrees.
+    ``bounded_git_probe``: a timed-out ``check_output`` on Windows can hang its drain (#68609)."""
+    return bounded_git_probe(["git", "-C", str(_repo_root()), "rev-parse", "HEAD"], timeout=2) or "unknown"
 
 
 def _call_logged(cb: Callable[[dict], None], frame: dict, failure: str) -> None:
@@ -103,35 +96,45 @@ def _call_logged(cb: Callable[[dict], None], frame: dict, failure: str) -> None:
 
 
 def _pid_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except Exception as exc:
-        return isinstance(exc, PermissionError)
+    # Never ``os.kill(pid, 0)``: on Windows signal 0 is CTRL_C_EVENT to the console group (bpo-14484).
+    from gateway.status import _pid_exists
+
+    return pid > 0 and _pid_exists(pid)
 
 
-def _signal_pid(pid: int, sig: int, label: str) -> bool:
-    """Send ``sig``; False when the pid is gone or the signal failed (logged)."""
-    try:
-        os.kill(pid, sig)
-        return True
-    except ProcessLookupError:
-        return False
-    except Exception:
-        logger.debug("failed to %s compute host pid=%s", label, pid, exc_info=True)
-        return False
+def _wait_pid_gone(pid: int, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while _pid_alive(pid):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+    return True
 
 
 def _pid_command(pid: int) -> str:
-    if pid <= 0:
-        return ""
-    with contextlib.suppress(Exception):  # Linux fast path
-        data = (Path("/proc") / str(pid) / "cmdline").read_bytes()
-        if data:
-            return data.replace(b"\x00", b" ").decode("utf-8", errors="replace")
-    return _check_output(["ps", "-p", str(pid), "-o", "command="])
+    """Command line from /proc, then psutil (the only source on Windows), then ``ps``."""
+    from gateway.status import _read_process_cmdline
+
+    return (_read_process_cmdline(pid) or "") if pid > 0 else ""
+
+
+def _pid_start_time(pid: int) -> int | None:
+    """``gateway.status`` start-time fingerprint: ``(pid, start)`` names one process incarnation."""
+    from gateway.status import get_process_start_time
+
+    return get_process_start_time(pid) if pid > 0 else None
+
+
+def _same_incarnation(recorded: Any, live: int | None) -> bool:
+    """A registry from before fingerprints matches; a recorded one must agree with the live process."""
+    if recorded is None:
+        return True
+    from gateway.status import start_time_fingerprints_match
+
+    try:
+        return live is not None and start_time_fingerprints_match(recorded, live)
+    except (TypeError, ValueError):
+        return False
 
 
 def is_compute_host_identity(pid: int) -> bool:
@@ -213,23 +216,26 @@ class HostSupervisor:
     def reconcile_startup_orphan(self) -> str:
         """Terminate a stale registered host, guarding against PID reuse."""
         try:
-            data = json.loads(self.registry_path.read_text(encoding="utf-8"))
+            data = json.loads(self.registry_path.read_text(encoding="utf-8-sig"))
         except FileNotFoundError:
             return "none"
         except Exception:
             data = None
         try:
             pid = int((data or {}).get("host_pid") or 0)
+            recorded_start = (data or {}).get("host_start_time")
         except Exception:
-            pid = 0
+            pid, recorded_start = 0, None
+        # Read before the identity checks, so a kill is pinned to the process they inspected.
+        start_time = _pid_start_time(pid)
         if data is None:
             outcome = "invalid-registry"
         elif pid <= 0 or not _pid_alive(pid):
             outcome = "not-running"
-        elif not self._pid_matches_compute_host(pid):
+        elif not (_same_incarnation(recorded_start, start_time) and self._pid_matches_compute_host(pid)):
             outcome = "pid-reuse-ignored"  # PID reused by another process: never signal it
         else:
-            self._terminate_pid(pid, timeout=_SHUTDOWN_TIMEOUT_SECS)
+            self._terminate_pid(pid, start_time=start_time, timeout=_SHUTDOWN_TIMEOUT_SECS)
             outcome = "terminated"
         self._remove_registry()
         return outcome
@@ -347,11 +353,16 @@ class HostSupervisor:
         env.setdefault("PYTHONPATH", root)
         if root not in env["PYTHONPATH"].split(os.pathsep):
             env["PYTHONPATH"] = root + os.pathsep + env["PYTHONPATH"]
+        # Out of the launching terminal's Ctrl+C: POSIX gets its own session; Windows ignores that,
+        # so a new process group with a hidden console. No job breakaway: the host must die with a
+        # Desktop backend's kill-on-close job.
+        detach: dict[str, Any] = (
+            {"creationflags": windows_detach_flags_without_breakaway()} if IS_WINDOWS
+            else {"start_new_session": True})
         # Lossy UTF-8 decode: a locale-mismatched byte must not raise inside the drain threads.
         proc = subprocess.Popen(
             self.argv, cwd=str(self.cwd), env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", bufsize=1,
-            start_new_session=True)
+            stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", bufsize=1, **detach)
         self._proc = proc
         for target, name in ((self._drain_stdout, "compute-host-stdout"),
                              (self._drain_stderr, "compute-host-stderr"),
@@ -380,7 +391,8 @@ class HostSupervisor:
     def _persist_registry(self) -> None:
         self.registry_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.registry_path.with_suffix(self.registry_path.suffix + ".tmp")
-        payload = {"host_pid": self.pid, "boot_id": self._hello.get("boot_id") or "",
+        payload = {"host_pid": self.pid, "host_start_time": _pid_start_time(self.pid),
+                   "boot_id": self._hello.get("boot_id") or "",
                    "build_sha": self._hello.get("build_sha") or "", "started_at": time.time(),
                    "argv": self.argv}
         tmp.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
@@ -496,18 +508,35 @@ class HostSupervisor:
 
     _pid_matches_compute_host = staticmethod(is_compute_host_identity)
 
-    def _terminate_pid(self, pid: int, *, timeout: float = _SHUTDOWN_TIMEOUT_SECS) -> None:
-        if not _signal_pid(pid, signal.SIGTERM, "SIGTERM"):
-            return
-        deadline = time.monotonic() + timeout
-        while _pid_alive(pid):
-            if time.monotonic() >= deadline:
-                _signal_pid(pid, signal.SIGKILL, "SIGKILL")
+    def _terminate_pid(
+        self, pid: int, *, start_time: int | None, timeout: float = _SHUTDOWN_TIMEOUT_SECS,
+    ) -> None:
+        """Stop a registered host by bare pid: POSIX SIGTERM, SIGKILL after ``timeout``. Windows has
+        no graceful signal across consoles and a venv launcher makes the host this pid's child, so
+        it goes straight to ``taskkill /T /F``, which ``terminate_pid`` refuses unless ``start_time``
+        still names the live process."""
+        from gateway.status import terminate_pid
+
+        for force, wait in ((True, 2.0),) if IS_WINDOWS else ((False, timeout), (True, 2.0)):
+            try:
+                terminate_pid(pid, force=force, expected_start_time=start_time)
+            except ProcessLookupError:
                 return
-            time.sleep(0.05)
+            except OSError:
+                logger.warning("failed to stop compute host pid=%s force=%s", pid, force, exc_info=True)
+                return
+            if _wait_pid_gone(pid, wait):
+                return
 
     def _terminate_process(self, proc: subprocess.Popen[str]) -> None:
         if proc.poll() is not None:
+            return
+        if IS_WINDOWS:
+            # terminate() would end only a venv launcher, leaving the host holding our pipes. Our own
+            # handle pins the pid, so the tree kill needs no identity guard.
+            kill_process_tree(proc)
+            with contextlib.suppress(Exception):
+                proc.wait(timeout=2)
             return
         with contextlib.suppress(Exception):
             proc.terminate()
