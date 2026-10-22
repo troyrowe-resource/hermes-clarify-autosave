@@ -1,0 +1,68 @@
+name: Compute-host supervisor - native process tests
+
+# The compute-host supervisor (dashboard.turn_isolation) probes, identifies and kills processes;
+# those paths differ per OS and only the host itself can prove them. This lane runs the supervisor's
+# real-process tests on standard hosted Windows and Linux runners: each job runs the tests marked for
+# its own OS plus the platforms("any") contracts. Upstream's tests-os.yml covers these files through
+# scripts/ci/list_os_marked_tests.py; that workflow is not active in this repository.
+
+on:
+  push:
+    paths:
+      - tui_gateway/host_supervisor.py
+      - tests/tui_gateway/test_host_supervisor_processes.py
+      - .github/workflows/compute-host-supervisor.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compute-host-supervisor-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  native:
+    name: Supervisor process tests (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2025, ubuntu-24.04]
+    env:
+      OPENROUTER_API_KEY: ''
+      OPENAI_API_KEY: ''
+      NOUS_API_KEY: ''
+      ANTHROPIC_API_KEY: ''
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Prepare locked Python toolchain and test interpreter
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: python
+          extras: '[]'
+          test-environment: 'true'
+          archive-inputs: 'false'
+
+      # -rs prints every skip reason, so the log shows which OS-marked tests this host ran.
+      - name: Supervisor real-process tests
+        env:
+          HERMES_TEST_FILE_RETRIES: '0'
+        run: |
+          scripts/run_tests.sh \
+            tests/tui_gateway/test_host_supervisor_processes.py \
+            tests/tools/test_spawn_site_child_env.py \
+            -v -rs --tb=short
+
+      - name: Windows footgun linter
+        if: always()
+        run: python scripts/check-windows-footguns.py tui_gateway/host_supervisor.py
