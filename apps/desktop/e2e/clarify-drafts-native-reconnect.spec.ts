@@ -11,8 +11,8 @@
  *     real timeout then leaves exactly that state as drafts, never answers.
  *  2. After a cut connection Confirm is still the one submission: the locks reach the model as answers and
  *     supersede the drafts on the server and on this device.
- *  3. Edits made while the connection is down are reported truthfully (never as saved) and are not lost when
- *     the connection returns.
+ *  3. Edits made while the connection is down are reported truthfully (never as saved), are not lost when
+ *     the connection returns, and reach the server without the user typing again.
  */
 
 import { MIXED_CLARIFY_TRIGGER } from '../../../tests-js/scripts/mock-server'
@@ -50,7 +50,7 @@ import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fi
 import { expect, test } from './test'
 
 // Long enough for a cut, a reconnect and a reload on a slow machine; the test then waits out the rest.
-const CLARIFY_TIMEOUT_SECONDS = 90
+const CLARIFY_TIMEOUT_SECONDS = 75
 
 test.describe.configure({ mode: 'serial' })
 
@@ -217,10 +217,11 @@ test.describe('clarify drafts (native, reconnect and reload)', () => {
   })
 
   test('edits made while the connection is down are reported as unsent, never as saved, and reach the server when it returns', async () => {
-    test.setTimeout((CLARIFY_TIMEOUT_SECONDS + 210) * 1000)
+    test.setTimeout(240_000)
     const { mock, page, sandbox } = fixture!
     const from = mock.receivedChatRequests.length
     const before = serverDraftRecords(sandbox.hermesHome).map(entry => entry.requestId)
+    const mineOnDisk = () => serverDraftRecords(sandbox.hermesHome).find(entry => !before.includes(entry.requestId))
 
     await newSession(page)
     await sendPrompt(page, `${MIXED_CLARIFY_TRIGGER} reconnect-third`)
@@ -240,8 +241,7 @@ test.describe('clarify drafts (native, reconnect and reload)', () => {
     const offline = await readDraftStatus(form)
     const device = await deviceDraftEntries(page)
     expect(device.some(entry => JSON.parse(entry.value).drafts?.q2?.text === offlineText)).toBe(true)
-    const [staleOnDisk] = serverDraftRecords(sandbox.hermesHome).filter(entry => !before.includes(entry.requestId))
-    expect(staleOnDisk.record.drafts.q2.text, 'the server has only what was typed while online').toBe('typed while online')
+    expect(mineOnDisk()?.record.drafts.q2.text, 'the server has only what was typed while online').toBe('typed while online')
     await shot(page, 'reconnect-06-offline-edit.png')
 
     // The network returns: the renderer redials, the card is the same, and the text is still all there.
@@ -252,28 +252,70 @@ test.describe('clarify drafts (native, reconnect and reload)', () => {
 
     // The server ends up holding the newest text without the user typing again, and only then does the card say saved.
     await expect
-      .poll(
-        () =>
-          serverDraftRecords(sandbox.hermesHome).find(entry => !before.includes(entry.requestId))?.record.drafts.q2?.text,
-        { message: 'the edit made offline reaches the server after the reconnect', timeout: 30_000 }
-      )
+      .poll(() => mineOnDisk()?.record.drafts.q2?.text, {
+        message: 'the edit made offline reaches the server after the reconnect',
+        timeout: 30_000
+      })
       .toBe(offlineText)
     await waitForDraftState(again, 'saved')
     await shot(page, 'reconnect-07-offline-edit-synced.png')
 
-    // Nothing was submitted by any of it; the timeout then settles the newest text as a draft.
+    // Nothing was submitted by any of it; Confirm is what submits, and it carries the newest text.
     expect(clarifyToolResults(mock, from)).toEqual([])
-    const settled = settledCards(page).filter({ visible: true })
-    await settled.first().waitFor({ state: 'visible', timeout: (CLARIFY_TIMEOUT_SECONDS + 60) * 1000 })
-    await expect(settled).toHaveCount(1)
-    await waitForFinalSettled(settled, 1)
-    expect((await readDraftRows(settled)).map(row => row.content)).toEqual([[offlineText]])
-
+    await again.locator('button[type="submit"]').click()
+    await settledCards(page).filter({ visible: true }).first().waitFor({ state: 'visible', timeout: 60_000 })
     await expect.poll(() => clarifyToolResults(mock, from).length, { timeout: 30_000 }).toBe(1)
     const [told] = clarifyToolResults(mock, from)
-    expect(told.drafts_submitted).toBe(false)
-    expect(told.drafts?.map(draft => draft.typed_text)).toEqual([offlineText])
+    expect(told.outcome).toBe('submitted')
+    expect(told.responses[2]).toMatchObject({ status: 'answered', user_response: offlineText })
 
     observations.offlineEdit = { modelReceived: told, statusWhileOffline: offline }
+  })
+
+  test('a whole draft made while the connection is down, from the very first edit, reaches the server when it returns', async () => {
+    test.setTimeout(240_000)
+    const { mock, page, sandbox } = fixture!
+    const from = mock.receivedChatRequests.length
+    const before = serverDraftRecords(sandbox.hermesHome).map(entry => entry.requestId)
+    const mineOnDisk = () => serverDraftRecords(sandbox.hermesHome).find(entry => !before.includes(entry.requestId))
+
+    await newSession(page)
+    await sendPrompt(page, `${MIXED_CLARIFY_TRIGGER} reconnect-fourth`)
+    const form = await waitForLiveForm(page, 3)
+
+    // Nothing has been edited yet, so the server holds no draft at all; the network goes down.
+    const opened = link.opened()
+    link.down()
+    await toggleChoice(form, 1, 'Tea')
+    await typeText(form, 2, MIXED_TEXT)
+    await expect(textField(form, 2)).toHaveValue(MIXED_TEXT)
+    await waitForDraftState(form, 'device-only')
+    expect(await observeDraftStates(form, 1_500)).toEqual([])
+    expect(mineOnDisk(), 'the server has nothing yet').toBeUndefined()
+
+    link.restore()
+    await waitForReconnect(link, opened)
+    const again = await waitForLiveForm(page, 3)
+    expect(await readFormState(again)).toEqual({ picks: [[], ['Tea'], []], texts: ['', '', MIXED_TEXT] })
+
+    await expect
+      .poll(() => mineOnDisk()?.record.drafts, {
+        message: 'a draft made entirely offline reaches the server after the reconnect',
+        timeout: 30_000
+      })
+      .toMatchObject({ q1: { choices: ['Tea'], text: '' }, q2: { choices: [], text: MIXED_TEXT } })
+    expect(mineOnDisk()?.record.drafts.q0, 'an untouched question has no draft').toBeUndefined()
+    await waitForDraftState(again, 'saved')
+
+    expect(clarifyToolResults(mock, from)).toEqual([])
+    await again.locator('button[type="submit"]').click()
+    await settledCards(page).filter({ visible: true }).first().waitFor({ state: 'visible', timeout: 60_000 })
+    await expect.poll(() => clarifyToolResults(mock, from).length, { timeout: 30_000 }).toBe(1)
+    const [told] = clarifyToolResults(mock, from)
+    expect(told.outcome).toBe('submitted')
+    expect(told.responses[1]).toMatchObject({ status: 'answered', user_response: 'Tea' })
+
+    observations.firstEditOffline = { modelReceived: told }
+  })
   })
 })

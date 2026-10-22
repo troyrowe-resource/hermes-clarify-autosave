@@ -86,7 +86,14 @@ function harness(): Harness {
     }
   }
 
-  return { app, appData, defaultUserData, names, pins, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) }
+  return {
+    app,
+    appData,
+    defaultUserData,
+    names,
+    pins,
+    cleanup: () => fs.rmSync(root, { recursive: true, force: true })
+  }
 }
 
 async function identityFor(env: Record<string, string>, nonstable: boolean): Promise<ProductIdentity> {
@@ -100,7 +107,11 @@ async function identityFor(env: Record<string, string>, nonstable: boolean): Pro
 
   const identity: ProductIdentity = (await import('./product-identity')).PRODUCT_IDENTITY
 
-  assert.equal(identity.appNamePascal !== identity.artifactNamePascal, nonstable, 'the fixture identity is not as labelled')
+  assert.equal(
+    identity.appNamePascal !== identity.artifactNamePascal,
+    nonstable,
+    'the fixture identity is not as labelled'
+  )
 
   return identity
 }

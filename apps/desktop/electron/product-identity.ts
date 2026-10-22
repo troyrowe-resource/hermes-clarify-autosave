@@ -80,7 +80,11 @@ export function applyDesktopUserData(
 
   if (env.HERMES_DESKTOP_USER_DATA_DIR || env.HERMES_DATA_DIR_SUFFIX) {
     // Only the suffix form builds on the default; an explicit directory never needs it.
-    const userData: string = resolveDesktopUserData(env.HERMES_DESKTOP_USER_DATA_DIR ? '' : app.getPath('userData'), env)
+    const userData: string = resolveDesktopUserData(
+      env.HERMES_DESKTOP_USER_DATA_DIR ? '' : app.getPath('userData'),
+      env
+    )
+
     mkdirSync(userData, { recursive: true })
     app.setPath('userData', userData)
   }
