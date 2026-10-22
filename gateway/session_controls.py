@@ -625,6 +625,7 @@ class AuthorityConnection:
             await asyncio.to_thread(refresh_profile_hooks, policy_for_source(self.authority.runner, source))
             info = await snapshot_info(self.authority, snapshot.handle.ref)
         from gateway.session_connections import pending_connection
+        from gateway.session_server_requests import snapshot_fields
         # Its home module, not tui_gateway.server: importing the stdio sidecar points sys.stdout at stderr.
         from tui_gateway.tool_progress import _todo_state_from_history
         history, display = list(snapshot.history), {}
@@ -641,6 +642,9 @@ class AuthorityConnection:
                 'execution_generation': snapshot.handle.execution_generation,
                 'pending': [asdict(r) for r in snapshot.pending],
                 'prompts': list(snapshot.prompts), 'info': info,
+                # The open batch clarify this viewer may answer, with its locks and drafts (the frame went
+                # out before this socket attached): the reconnecting card is restored, never lost.
+                **snapshot_fields(self.authority, self.actor, ref.session_id),
                 'pending_connection': pending_connection(self.authority, ref.session_id),
                 # The newest todo result in the transcript, the snapshot the session's agent hydrates
                 # from and its ``todo.updated`` frames carried: a viewer attaching shows the plan now.
@@ -684,7 +688,11 @@ class AuthorityConnection:
         epoch = params.get('replay_epoch')
         if type(sequence) is not int or sequence < 0 or (epoch is not None and not isinstance(epoch, str)):
             raise RuntimeStoreError('invalid_params')
-        return self.authority.sessions[ref.session_id].event_stream.since(epoch, sequence)
+        from gateway.session_server_requests import snapshot_fields
+        replay = self.authority.sessions[ref.session_id].event_stream.since(epoch, sequence)
+        # A server request is not an event: it cannot ride the replay ring, so the entitled viewer gets the
+        # still-open batch clarify beside the events (the reconnect handshake's other half, ``session.resume``).
+        return {**replay, **snapshot_fields(self.authority, self.actor, ref.session_id)}
 
     async def submit(self, ref, params):
         if self._voice_stop_replay(ref, params) or await self._typed_voice_stop(ref, params):

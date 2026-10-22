@@ -14,7 +14,7 @@ import {
 import { $gateway } from '@/store/gateway'
 import { hasOpenServerRequest, rememberServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
-import { recordSessionEventScope } from '@/store/session-states'
+import { clearAllSessionStates, recordSessionEventScope } from '@/store/session-states'
 
 import { ClarifyTool } from './index'
 
@@ -170,6 +170,7 @@ function disableStorage(): () => void {
 
 beforeEach(() => {
   window.localStorage.clear()
+  clearAllSessionStates()
   resetClarifyDraftsForTests()
   resetServerRequestsForTests()
   $activeSessionId.set('session-1')
@@ -181,6 +182,7 @@ afterEach(() => {
   vi.restoreAllMocks()
   cleanup()
   clearClarifyRequest()
+  clearAllSessionStates()
   resetClarifyDraftsForTests()
   resetServerRequestsForTests()
   $activeSessionId.set(null)
@@ -365,10 +367,20 @@ describe('clarify draft status under device storage failures', () => {
     }
   })
 
-  it('storage that recovers stops reporting not-saved on the next successful write', async () => {
+  it('storage that recovers stops reporting not-saved on the next successful write', () => {
     mount(() => ({ status: 'ok' }))
-    vi.spyOn(Storage.prototype, 'setItem').mockImplementationOnce(() => {
-      throw new DOMException('quota', 'QuotaExceededError')
+
+    // Refuse exactly the first draft write (quota), then behave again.
+    const write = Storage.prototype.setItem
+    let refused = false
+
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key: string, value: string) {
+      if (!refused && key.startsWith('hermes.clarifyDrafts')) {
+        refused = true
+        throw new DOMException('quota', 'QuotaExceededError')
+      }
+
+      write.call(this, key, value)
     })
 
     fireEvent.change(field(), { target: { value: 'first' } })
@@ -376,9 +388,11 @@ describe('clarify draft status under device storage failures', () => {
 
     fireEvent.change(field(), { target: { value: 'first, then second' } })
     expect(state()).toBe('device-only')
-    expect(JSON.parse(window.localStorage.getItem(Object.keys(window.localStorage)[0]) ?? '{}').drafts.q1.text).toBe(
-      'first, then second'
-    )
+    expect(stateLine()?.textContent).toBe(DEVICE_ONLY)
+
+    const keys = Object.keys(window.localStorage).filter(key => key.startsWith('hermes.clarifyDrafts'))
+    expect(keys).toHaveLength(1)
+    expect(JSON.parse(window.localStorage.getItem(keys[0]) ?? '{}').drafts.q1.text).toBe('first, then second')
   })
 })
 

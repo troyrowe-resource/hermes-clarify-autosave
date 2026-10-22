@@ -52,7 +52,7 @@ Protection levels:
    legacy `session.delete` RPC, whose only in-tree caller is the Ink TUI picker (which never saves a
    draft). The Desktop deletes through REST and the canonical `delete` mutation, which never purge
    `[code]`. The Desktop's own comment ("the backend drops its own on delete",
-   `apps/desktop/src/app/session/hooks/use-session-actions/deleted-session-local-state.ts:36`) is true
+   `apps/desktop/src/app/session/hooks/use-session-actions/deleted-session-local-state.ts:37`) is true
    for the legacy RPC only.
 6. Further gaps (lineage ids, profile rename and delete, killed turns, retention, Windows file
    protection, no owner-side replay of an open batch card) are in section 4.
@@ -100,12 +100,13 @@ How the owner chooses batch or per-question `[code]`
 - `clarify_batch_turn` needs a local-viewer turn whose submitter committed `clarify_batch` with its
   admission (`gateway/session_cli_turn.py:54-61`, `160-167`). The only in-tree sender at base is the
   classic CLI (`hermes_cli/gateway_agent.py:686-688`). Nothing under `apps/` or `ui-tui/` sets it
-  (`git grep clarify_batch 4a929786` finds only the generated contract type and a test comment).
+  (`git grep clarify_batch 4a929786 -- apps ui-tui` finds only the generated contract files and a test
+  comment).
 - Each per-question card is a `clarify.request` event (`gateway/session_pending_controls.py:40-51`) with
   a 10-hex `clarify_id` (`gateway/run_turn_runner.py:592`), answered with `clarify.respond`. The Desktop
   turns the event into a one-question request with `qid = prompt_id`
   (`apps/desktop/src/api/canonical-protocol.ts:23-34`, `apps/desktop/src/api/client.ts:126-176`) and
-  sends its Confirm as `clarify.lock` rewritten to `clarify.respond` (`client.ts:401-406`).
+  sends its Confirm as `clarify.lock` rewritten to `clarify.respond` (`client.ts:401-407`).
 
 What happens to a draft `[code][probe P6]`
 
@@ -136,12 +137,12 @@ Native evidence `[CI][S2]`
   questions "No answer", then "Unsubmitted drafts", "The assistant has not seen these drafts.", and the
   row "Pick a batch drink?" / "Tea" / "Server disk save not confirmed" (`en_clarify.ts:25`, `31`). The mock
   inference server logged its second chat completion 25.2 s after the first (07:29:07.98 and 07:29:33.17
-  UTC): the wait expired and the turn continued.
+  UTC), which is consistent with the wait expiring and the turn continuing.
 - The same run failed at `card.getByPlaceholder(/Other/).nth(1).fill(...)`
   (`apps/desktop/e2e/clarify-drafts-native.spec.ts:56`): only the first question's card existed.
 
 Reconnect `[code]`: the attach snapshot re-delivers pending per-question prompts
-(`gateway/session_authority.py:344`; `client.ts:495-511`), so an open card survives a reconnect and its
+(`gateway/session_authority.py:344`; `client.ts:493-511`), so an open card survives a reconnect and its
 staged picks come back from the device copy (`.../clarify/pending-drafts.tsx:67-104`).
 
 After the candidate's change: <!-- LEAD: post-fix verified state of R1: which prompt.submit senders declare clarify_batch, the test names, the run URL --> pending.
@@ -202,7 +203,8 @@ Pre-fix state, precisely `[code][probe P4]`:
 
 - The path exists only when `dashboard.turn_isolation` is true (default `false`,
   `hermes_cli/config_defaults.py:1020`; gate at `tui_gateway/compute_host_bridge.py:23-34`), on the legacy
-  `tui_gateway` transport. The canonical owner has its own isolation and does not use it.
+  `tui_gateway` transport. The canonical owner does not use the compute host
+  (`git grep compute_host 4a929786 -- gateway` finds one comment).
 - The child builds its own `tui_gateway.server` and session record (`tui_gateway/compute_host.py:341-426`;
   `HERMES_COMPUTE_HOST_CHILD=1` at `:553`), so the clarify request is created in the child's registry. The
   parent only mirrors the open request (`compute_host_bridge.py:147-153`).
@@ -222,13 +224,14 @@ Pre-fix state, precisely `[code][probe P4]`:
 
 ### R5. Ink TUI and R6. dashboard `/chat`
 
-- `ui-tui/` has no draft code: `git grep -i draft 4a929786 -- ui-tui/src` finds only a cursor restore for
-  revisiting a *locked* answer (`ui-tui/src/lib/text.ts:384-390`). `web/src` has no clarify code; the
-  dashboard embeds the real TUI in a PTY (`web/AGENTS.md`).
+- `ui-tui/` never calls `clarify.draft`, `clarify.drafts` or `clarify.drafts.discard` (`git grep
+  clarify.draft 4a929786 -- ui-tui` finds nothing); the only clarify-related "draft" is a cursor restore
+  for revisiting a *locked* answer (`ui-tui/src/lib/text.ts:384-390`). `web/src` has no clarify code at
+  all; the dashboard embeds the real TUI in a PTY (`web/AGENTS.md`).
 - Batch card on the sidecar: each Enter locks an answer through `clarify.lock`
   (`ui-tui/src/app/useMainApp.ts:874-925`), so a locked answer survives a timeout. Typed or picked but
   not yet locked text is lost on Esc or timeout: the overlay is flushed to a system line with locked
-  answers only (`useMainApp.ts:839-870`, `ui-tui/src/app/createGatewayEventHandler.ts:737-749`).
+  answers only (`useMainApp.ts:841-872`, `ui-tui/src/app/createGatewayEventHandler.ts:737-749`).
 - On the shared gateway the Ink card is per-question and answers with `clarify.respond`
   (`useMainApp.ts:857`, `897`): as R1 without a device copy.
 
@@ -243,8 +246,8 @@ Pre-fix state, precisely `[code][probe P4]`:
 ### R8. Other per-question viewers of the owner
 
 ACP editors answer through `clarify.respond` (`acp_adapter/gateway_server.py:1100-1128`); `api_server` runs
-answer through `respond_run` (`gateway/platforms/api_server_authority_runs.py:100-130`); raw WebSocket
-clients get the `clarify.request` event. Managed-worker executions (kanban cards, `--safe-mode` or
+answer through `respond_run` (`gateway/platforms/api_server_authority_runs.py:100-110`, `113`); raw
+WebSocket clients get the `clarify.request` event. Managed-worker executions (kanban cards, `--safe-mode` or
 `--ignore-user-config` sessions, or the opt-in `gateway.managed_workers`) ask per question regardless of
 the flag (`agent/managed_worker.py:229-249`; the owner registers each as a per-question card,
 `gateway/session_managed_worker.py:46-48`, `389-391`). None keeps a draft; the owner's `clarify.draft`
@@ -267,8 +270,26 @@ A backend without `clarify.draft` answers `-32601`; the Desktop records the owne
 ### R11. No card
 
 `chat -q` / `-z` turns are answered headless at once (`gateway/run_turn_runner.py:545-549`); oneshot says
-"no user available" (`hermes_cli/oneshot.py:661-667`); hosted rooms and forwarded A2A peers are declined
+"no user available" (`hermes_cli/oneshot.py:661-665`); hosted rooms and forwarded A2A peers are declined
 (`gateway/session_local.py:87-114`).
+
+### 3.1 Per-question card routes: exactly which stay device-only and which are unprotected
+
+A per-question card has no server draft registry, so none of these routes can reach the server channel. The
+list is the same after the candidate's Desktop change: only a batch request moves a route out of it.
+
+| Route | Protection | Why | Evidence |
+|---|---|---|---|
+| Desktop turn from a sender that does not ask for a batch (at base every sender; after the change, any sender in section 6 that still omits the flag) | **Device** | The card is a Desktop card, so it saves to the device; the owner answers `expired` | R1 `[code][probe P6]` |
+| Desktop against an owner that refuses the `clarify_batch` key (an owner older than the key) | **Device** | The owner sends per-question cards | `[inferred]` |
+| Desktop against a backend with no `clarify.draft` | **Device** | `-32601`; the owner is remembered as unsupported | `clarify-drafts.ts:565-571`; `en_clarify.ts:22` `[code]` |
+| Desktop attached to a managed-worker execution (kanban card, `--safe-mode`, `--ignore-user-config`, or the opt-in `gateway.managed_workers`) | **Device** | The worker asks per question whatever the flag says | `agent/managed_worker.py:229-249`; `gateway/session_managed_worker.py:46-48`, `389-391` `[code]` |
+| Desktop card whose owner cannot be proven | **None** | No complete scope, so nothing is stored or sent; the card says "Not saved: this form could not confirm which conversation owns it" | `clarify-drafts.ts:197-206`; `.../clarify/pending-drafts.tsx:165-175`; `en_clarify.ts:35-36` `[code]` |
+| ACP editors | **None** | The editor shows its own prompt and answers with `clarify.respond` | `acp_adapter/gateway_server.py:1100-1128` `[code]` |
+| Raw WebSocket and other canonical clients | **None** from Hermes | They get the `clarify.request` event; `clarify.draft` for such an id answers `expired` | `[probe P6]` |
+| `api_server` runs | **None** | Answered through `respond_run` | `gateway/platforms/api_server_authority_runs.py:100-110`, `113` `[code]` |
+| Ink TUI on the shared gateway | **None** | No draft code; answers with `clarify.respond` | `ui-tui/src/app/useMainApp.ts:857`, `897` `[code]` |
+| Messaging platforms | Not applicable | A tap or a typed reply is the answer; no staged state exists | R9 |
 
 ## 4. Lifecycle gaps
 
@@ -283,7 +304,7 @@ A backend without `clarify.draft` answers `-32601`; the Desktop records the owne
 |---|---|---|
 | `session.delete` RPC (legacy) | Yes, the target id only, both gateway kinds | `methods_session.py:1191-1192` |
 | Its only in-tree caller: the Ink TUI picker, non-canonical mode | n/a: Ink saves no drafts; canonical mode uses `session.mutate delete` (no purge) | `ui-tui/src/hooks/useSessionDelete.ts:38-60` |
-| Desktop delete (REST `DELETE /api/sessions/{id}`, then the canonical `delete` mutation) | **No** | `apps/desktop/src/api/sessions.ts:715-717`; `hermes_cli/web_routers/sessions.py:847-871`; `gateway/session_mutations.py:212-284` has no purge |
+| Desktop delete (REST `DELETE /api/sessions/{id}`, then the canonical `delete` mutation) | **No** | `apps/desktop/src/api/sessions.ts:715-717`; `hermes_cli/web_routers/sessions.py:847-871`; `gateway/session_mutations.py` handles `delete` at `212`, `269`, `360` and never mentions clarify, drafts or a purge |
 | Dashboard bulk delete, delete empty, prune | **No** | `hermes_cli/web_routers/sessions.py:486`, `534`, `116` |
 | Owner `session.prune` | **No** | `gateway/session_prune.py:57` |
 | CLI `hermes sessions delete`, `prune`, export with delete, browse | **No** | `hermes_cli/sessions_cmd.py:612`, `643`, `818`; `hermes_cli/sessions_cmd_browse.py:263` |
@@ -336,13 +357,13 @@ drafts at base. Not covered even by that seam: the `api_server` raw delete
 - **Move** (a home relocated as a whole): the server copies follow it for the same reason as rename
   `[inferred]`. Device keys hold a gateway id and a profile name, not a path.
 - **Delete**: the server tree is removed (`hermes_cli/profiles.py:1844`). Device copies are not:
-  `dropTilesForProfile` (`session-states.ts:2738-2814`, called at
+  `dropTilesForProfile` (`session-states.ts:2738-2838`, called at
   `apps/desktop/src/app/profiles/delete-profile-dialog.tsx:77`) does not touch the draft key family
   (`clarify-drafts.ts` is the only file that names it).
 - **Clone and export**: `clarify_drafts/` is not in `_CLONE_ALL_HISTORY_EXCLUDE_ROOT`
   (`hermes_cli/profiles.py:86-89`), so `--clone-all` copies the source's unsent text into the clone
   without its `state.db`. A named-profile export excludes only credential stores and runtime directories
-  (`profiles.py:2235-2243`; `profile_path_is_private` at `:200-205`), so the archive carries drafts; the
+  (`profiles.py:2235-2242`; `profile_path_is_private` at `:200-205`), so the archive carries drafts; the
   default-profile export is an allow-list that does not name them (`profiles.py:258`).
 
 ### 4.4 A crashed or killed turn
@@ -374,8 +395,9 @@ most 5 questions (`tools/clarify_tool.py:9`). Device copies have no expiry eithe
   after a lost registry, with `outcome is None`) passed. The discard assertions after it (lines `255-257`)
   did not run. On NTFS the protection is the parent directory's ACL.
 - **The directory is not fsynced** `[code]`: `_fsync_dir` returns immediately on Windows
-  (`tools/clarify_drafts.py:164-171`). The file content is fsynced and `os.replace` is atomic for a killed
-  process; a power loss can still lose the rename `[inferred]`.
+  (`tools/clarify_drafts.py:164-171`), although the module docstring says "file and directory fsynced"
+  (line `15`). The file content is fsynced and `os.replace` is atomic for a killed process; a power loss
+  can still lose the rename `[inferred]`.
 - **`mkdir(mode=0o700)` hazard** `[inferred]`: on CPython 3.13 and later it applies a protected ACL, which
   strands a directory an elevated process created from the same user unelevated, and is why Hermes routes
   state directories through `make_user_dir` (`hermes_dir_acl.py:1-14`). The draft store uses a plain
@@ -401,13 +423,14 @@ most 5 questions (`tools/clarify_tool.py:9`). Device copies have no expiry eithe
 
 ## 5. Gap register
 
-Disposition is `fixed in candidate`, `disclosed limitation` or `not applicable`. The values below are what
-S5 can support today. Change a row to `fixed in candidate` only with a commit and a passing test name.
+Disposition is `fixed in candidate`, `disclosed limitation` or `not applicable`; `Open` means undetermined
+until the lead fills the last column. The values below are what S5 can support today. Change a row to
+`fixed in candidate` only with a commit and a passing test name.
 
 | ID | Gap | State at base | Disposition now | Lead fills |
 |---|---|---|---|---|
 | G1 | Desktop default route gets per-question cards: no server drafts (R1) | Device only; model told nothing | Open | <!-- LEAD: disposition, commit, test, run URL --> |
-| G2 | Per-question routes that stay unprotected after G1: a Desktop sender that omits the flag, an owner that refuses it, older backends, managed workers, ACP, raw WebSocket, `api_server`, Ink (section 6) | Device or None | Disclosed limitation | <!-- LEAD: confirm the list --> |
+| G2 | Per-question routes that stay unprotected after G1: a Desktop sender that omits the flag, an owner that refuses it, older backends, managed workers, ACP, raw WebSocket, `api_server`, Ink (sections 3.1 and 6) | Device or None | Disclosed limitation | <!-- LEAD: confirm the list --> |
 | G3 | Compute-host child-owned requests (R4) | Device only | Open | <!-- LEAD: disposition, commit, test --> |
 | G4 | Deletion routes that do not purge server drafts (4.1) | Only the legacy RPC purges | Disclosed limitation unless the central seam is used | <!-- LEAD: disposition --> |
 | G5 | Older lineage segments and compression rotation (4.2) | Exact id only | Disclosed limitation | <!-- LEAD --> |

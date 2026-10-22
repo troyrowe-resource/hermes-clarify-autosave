@@ -24,6 +24,8 @@ The imported source is the complete snapshot of:
 - Source commit: [`b6a1a4e36fab77a974943e95e9e8ce224a8de632`](https://github.com/troyrowe-resource/hermes-agent/commit/b6a1a4e36fab77a974943e95e9e8ce224a8de632)
 - Upstream base: `4e58c721c8cf9b51c46636ea84ea6a5cb540880a` from `NousResearch/hermes-agent`
 
+The candidate work is on `candidate/clarify-autosave-windows`, started from `main` at [`9cbb93849d305369ad060d449cb530f8d3f2a185`](https://github.com/troyrowe-resource/hermes-clarify-autosave/commit/9cbb93849d305369ad060d449cb530f8d3f2a185); its first commit is [`4a92978697f386d7124e81d463f3a404ac4403fd`](https://github.com/troyrowe-resource/hermes-clarify-autosave/commit/4a92978697f386d7124e81d463f3a404ac4403fd). A commit cannot name itself, so the candidate's final commit is recorded in [`docs/clarify-candidate/HANDOFF.md`](docs/clarify-candidate/HANDOFF.md), not in this file. <!-- LEAD: once HANDOFF.md is filled, check this sentence still matches reality -->
+
 See [source-provenance.json](source-provenance.json). This repository has independent history: the source commit is provenance, not a local revision to check out here. No personal sessions, credentials, server configuration or conversation exports are included.
 
 The upstream README has been preserved as `README.upstream.md`. Original copyright and licence notices remain intact; see [LICENSE](LICENSE). Source ownership and attribution remain with the respective authors.
@@ -42,7 +44,7 @@ Inherited upstream workflows and Dependabot configuration are omitted from the c
 
 One automatic Dependabot update run started during the initial import and failed before its inherited configuration was made inert. That historical run is not a Windows build or an autosave test result; its record is retained.
 
-The seed workflow is preparation for a future run. **Its presence is not evidence that Windows tests have passed.** It is not an installer pipeline. `CLOUD_TASK.md` requires the agent to complete packaging and test the actual candidate artifact after native acceptance.
+The seed workflow is preparation for a future run. **Its presence is not evidence that Windows tests have passed.** It is not an installer pipeline. `CLOUD_TASK.md` requires the agent to complete packaging and test the actual candidate artifact after native acceptance. The first manual run on the unmodified candidate branch failed; see Evidence status below.
 
 Standard GitHub-hosted runner compute is free for public repositories under GitHub's published terms. Do not switch to paid larger or third-party runners or change billing settings. Keep run timeouts, concurrency and artifact retention bounded.
 
@@ -54,10 +56,15 @@ Standard GitHub-hosted runner compute is free for public repositories under GitH
 - Reconciles revisions so older server data cannot overwrite newer edits or cleared values.
 - Separately reports device persistence, server-confirmed durability and assistant receipt.
 - Provides recovery after timeout without treating a draft as permission or a confirmed answer.
+<!-- LEAD: add one bullet per meaningful change made on the candidate branch (for example the Desktop asking the canonical gateway for batch clarify requests, or the compute-host draft relay), each only once it is committed and tested. -->
 
 **Confirm remains the submission action.** A timeout must not silently submit a draft, and a failed write must not be labelled saved.
 
-## Evidence status at repository creation
+## Evidence status
+
+Stages are kept apart on purpose. Source written, workflow created, build passed, native test passed, artifact uploaded and production installed are different facts, and each is recorded only when it has happened.
+
+### At repository creation (historical)
 
 | Check | Status |
 |---|---|
@@ -72,14 +79,36 @@ Standard GitHub-hosted runner compute is free for public repositories under GitH
 
 The originating counts are historical context, not proof for later commits or this repository's new CI workflow. Record the exact commit and run outcome for every new verification.
 
-## Known gaps to address or disclose
+### On the candidate branch (`candidate/clarify-autosave-windows`)
 
-- Compute-host child-owned sidecar requests currently fall back to device-only draft protection; their server draft relay is not implemented.
-- The new server draft channel is for supported Desktop batch flows, not every per-question messaging card.
-- Draft cleanup is wired to the relevant sidecar session-delete path, not all possible CLI/dashboard/bulk deletion routes.
-- Profile rename/move does not migrate device draft copies.
-- A crashed turn can leave a durable draft without a terminal transcript result; explicit recall is separate.
-- Windows CI is not proof of compatibility with a particular installed app, laptop configuration or live server route.
+| Stage | Status |
+|---|---|
+| Baseline Windows run on the unmodified candidate (`4a92978`) | **Failed**: [run 39740118224](https://github.com/troyrowe-resource/hermes-clarify-autosave/actions/runs/39740118224). Toolchain, `npm ci` and the Desktop build succeeded; the selected Python tests ended 234 passed, 2 failed (17 files); the native Playwright spec failed; the isolation check found `%APPDATA%\Hermes` created. A baseline, not a pass |
+| Candidate source changes | Not yet recorded <!-- LEAD: one line per meaningful change, with commits --> |
+| Linux checks on the candidate commit (Python, Desktop, repository checks, TypeScript, generated contracts) | Not yet recorded <!-- LEAD: real counts and the exact commit, read back from the run or command output --> |
+| Native Windows test on the candidate commit | Not yet passed <!-- LEAD: run URL, conclusion, test counts, tested commit --> |
+| Windows candidate artifact (packaged with publication disabled) | Not produced <!-- LEAD: artifact name, run URL, SHA-256 of the exact bytes tested --> |
+| Packaged bytes tested | Not done <!-- LEAD: how and where --> |
+| Production app, server or state | Not touched. Installation is not authorised and has not been done |
+
+The baseline run's detail and every execution path are in [`docs/clarify-candidate/EXECUTION_PATHS.md`](docs/clarify-candidate/EXECUTION_PATHS.md). The final operator handoff will be [`docs/clarify-candidate/HANDOFF.md`](docs/clarify-candidate/HANDOFF.md).
+
+## Known gaps and what is protected where
+
+The server draft channel (`clarify.draft`, `clarify.drafts`, `clarify.drafts.discard`) covers only batch clarify requests, and only on some routes. [`docs/clarify-candidate/EXECUTION_PATHS.md`](docs/clarify-candidate/EXECUTION_PATHS.md) lists every route with file and line evidence and says which claims were only read from code. The middle column is the state at the candidate's first commit (`4a92978`); the last column is where the candidate's own result belongs. A row is "fixed in candidate" only when a commit and a passing test say so.
+
+| Gap | State at `4a92978` | Candidate result |
+|---|---|---|
+| The Desktop's default local route (the canonical gateway) delivered one clarify card per question, so no server draft was saved: protection was device-only, `clarify.draft` answered `expired`, and the assistant was told nothing about the unsent text | Verified on a native run and in code | Pending <!-- LEAD: fixed in candidate (commit, test, run URL), or disclosed limitation --> |
+| Per-question cards stay device-only or unprotected wherever no batch request is made: older backends, a Desktop send path that does not ask for a batch, managed-worker runs, ACP editors, raw WebSocket clients, `api_server` runs and the Ink terminal UI | Device-only or none | Disclosed limitation <!-- LEAD: confirm once the Desktop change is verified --> |
+| Compute-host child-owned requests (turn isolation) fell back to device-only; the server draft relay did not exist | Device-only | Pending <!-- LEAD: fixed in candidate (commit, test), or disclosed limitation --> |
+| Draft cleanup is wired only to the legacy `session.delete` RPC, which only the Ink terminal UI's picker calls. Deleting from the Desktop, dashboard, CLI, bulk prune or automatic prune leaves server drafts on disk | Verified in code | Disclosed limitation <!-- LEAD: or fixed in candidate, naming the seam used --> |
+| Profile rename does not migrate device draft copies (they are stranded); server copies follow the renamed directory. Profile delete leaves device copies. Profile clone and export carry unsent drafts | Verified in code | Disclosed limitation |
+| A crashed or killed turn leaves a durable draft without a terminal transcript result, and no screen offers to recall it | Verified by probe and code | Disclosed limitation |
+| Drafts have no retention timer and no cap on file count | Verified in code | Disclosed limitation |
+| On the session owner route an open batch card and its server drafts are not replayed after a reconnect or restart | Read from code | Disclosed limitation <!-- LEAD: confirm after the native reconnect test --> |
+| Windows: POSIX file modes are not enforced and directories are not fsynced; the baseline run's restart test failed on its `0600` assertion | Observed in the baseline run | Disclosed limitation <!-- LEAD: say what happened to the failing assertion --> |
+| Windows CI is not proof of compatibility with a particular installed app, laptop configuration or live server route | Always true | Always true |
 
 Do not hide these behind passing unit-test totals. Fix within the candidate where feasible and retain a precise remaining-gap report.
 

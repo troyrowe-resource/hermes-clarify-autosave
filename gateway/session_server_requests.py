@@ -13,11 +13,18 @@ A batch also keeps the viewer's unsent drafts (``clarify.draft`` → :func:`save
 ``tools.clarify_drafts.DraftBook`` the sidecar uses and behind the same :func:`may_settle` rule: a draft
 never settles, a lock or skip supersedes it, and what is still drafted when the wait ends rides the
 terminal result beside ``answers``.
+
+A request frame is written once, to the transports attached when it is asked, so a socket that drops and
+re-attaches (a 1006 close, a renderer reload) would never see it again. :func:`snapshot_fields` restores it
+in the ``session.resume`` / ``session.events.since`` answers as ``open_requests`` entries (the sidecar's
+``ServerRequest.snapshot``: the request as sent plus the locks and drafts so far), to exactly the viewers
+:func:`may_settle` entitles, so a reconnecting card keeps every answer and draft it already saved.
 """
 from __future__ import annotations
 
 import contextlib
 import threading
+import time
 import uuid
 
 from tools.clarify_batch import settle_batch
@@ -28,11 +35,15 @@ _POLL_S = 0.25
 
 
 class _Pending:
-    __slots__ = ("drafts", "event", "events", "locked", "qids", "result", "session_id", "value")
+    __slots__ = ("created_at", "drafts", "event", "events", "locked", "method", "params", "qids", "request_id",
+                 "result", "session_id", "value")
 
-    def __init__(self, session_id, qids=None, events=None):
+    def __init__(self, session_id, qids=None, events=None, *, request_id=None, method=None, params=None):
         self.event = threading.Event()
         self.session_id = session_id
+        # What a viewer that missed the frame needs to see the request again (``snapshot``).
+        self.request_id, self.method, self.params = request_id, method, params
+        self.created_at = time.monotonic()
         # The live session's own event stream the request went out on: one per authority (profile) and
         # session mount, so a viewer of another profile's same-named session can never settle it.
         self.events = events
@@ -42,6 +53,17 @@ class _Pending:
         self.qids = tuple(qids) if qids else None
         self.locked = {}
         self.drafts = None  # a batch's DraftBook, bound once the request id exists (``_ask``)
+
+    def snapshot(self, locked: dict) -> dict:
+        """The ``open_requests`` entry for a viewer that missed the request frame: the request as sent, plus the
+        batch answers *locked* so far (a copy taken under the registry lock) and the unsent drafts no lock
+        superseded (``ServerRequest.snapshot``)."""
+        params = {"session_id": self.session_id, **self.params}
+        if locked:
+            params["answers"] = locked
+        if self.drafts is not None and (drafts := self.drafts.snapshot(locked)):
+            params["drafts"] = drafts
+        return {"id": self.request_id, "method": self.method, "params": params}
 
 
 _lock = threading.Lock()
@@ -180,6 +202,21 @@ def discard_open_drafts(request_id, *, session_ok=lambda session_id, events: Fal
     return True
 
 
+def snapshot_fields(authority, actor, session_id) -> dict:
+    """``{"open_requests": [...]}`` for a ``session.resume`` / ``session.events.since`` answer: the batch requests
+    still open on *authority*'s live *session_id*, oldest first, for a viewer that attached after their frame
+    went out. Entitled exactly like :func:`lock_answer` (:func:`may_settle`): only a viewer attached to that live
+    session with ``session:respond``, never another session's or another profile's request (the table is
+    process-wide). ``{}`` when this viewer has none, so every client that never saw the key sees none."""
+    with _lock:
+        pending = sorted((p for p in _open.values() if p.qids is not None and p.session_id == session_id),
+                         key=lambda p: p.created_at)
+        entitled = [(p, dict(p.locked)) for p in pending if may_settle(authority, actor, p.session_id, p.events)]
+    # Outside the registry lock: a draft book may be mid-write (fsync) and must never stall other requests.
+    entries = [p.snapshot(locked) for p, locked in entitled]
+    return {"open_requests": entries} if entries else {}
+
+
 def _settle_drafts(pending):
     """Close a settled batch's draft book: the result gains the drafts no answer or skip superseded."""
     if pending.drafts is not None and isinstance(pending.result, dict):
@@ -191,7 +228,7 @@ def _ask(events, session_id, method, params, *, cancelled, timeout, qids=None, d
     if not events.fanout.transports():
         return None
     request_id = f"srq-{uuid.uuid4().hex[:12]}"
-    pending = _Pending(session_id, qids, events)
+    pending = _Pending(session_id, qids, events, request_id=request_id, method=method, params=params)
     if pending.qids is not None:
         pending.drafts = DraftBook(request_id, params.get("questions") or [], draft_scope)
     with _lock:
