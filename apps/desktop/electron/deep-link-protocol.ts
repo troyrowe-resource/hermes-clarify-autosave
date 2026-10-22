@@ -24,8 +24,11 @@ export interface DeepLinkProtocolOptions {
   execPath: string
   resolve: (entry: string) => string
   log: (line: string) => void
-  /** The install stamp's provenance (`INSTALL_STAMP?.source`); null on a dev bundle, which has no stamp. */
-  source?: InstallStamp['source']
+  /**
+   * The install stamp's provenance (`INSTALL_STAMP?.source`; undefined on a dev bundle, which has no stamp). Required, so
+   * a caller cannot forget it: a commit build must know it is one.
+   */
+  source: InstallStamp['source'] | undefined
 }
 
 export function registerDeepLinkProtocol(options: DeepLinkProtocolOptions): void {

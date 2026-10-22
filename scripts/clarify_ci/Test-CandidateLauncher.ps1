@@ -136,6 +136,7 @@ $contract = $null
 Assert-Case 'starts in a sandbox outside every real location and prints a launch contract' {
     $run = Invoke-Launcher 'Start-HermesClarifyCandidate.ps1' @('-Root', $sandbox, '-EmitEnvironment') @{
         OPENAI_API_KEY = 'sk-test'; GITHUB_TOKEN = 'ghs_test'; HERMES_FOO = 'leak'; NODE_OPTIONS = '--inspect'; ELECTRON_RUN_AS_NODE = '1'; PYTHONPATH = 'C:\leak'
+        HERMES_GATEWAY_LOCK_DIR = 'C:\real-locks'; XDG_STATE_HOME = 'C:\real-state'; CODEX_HOME = 'C:\real-codex'; CLAUDE_CONFIG_DIR = 'C:\real-claude'
     }
     if ($run.Code -ne 0) { return "exit $($run.Code): $($run.Err.Trim())" }
     $script:contract = $run.Out.Trim() | ConvertFrom-Json
@@ -145,17 +146,18 @@ if ($contract) {
     $envMap = @{}
     foreach ($property in $contract.environment.PSObject.Properties) { $envMap[$property.Name] = [string]$property.Value }
     Assert-Case 'every state location is inside the sandbox and the user-data switch matches the env var' {
-        $inside = @('HERMES_HOME', 'HERMES_DESKTOP_USER_DATA_DIR', 'USERPROFILE', 'HOME', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP')
+        $inside = @('HERMES_HOME', 'HERMES_DESKTOP_USER_DATA_DIR', 'HERMES_GATEWAY_LOCK_DIR', 'USERPROFILE', 'HOME', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP')
         foreach ($name in $inside) { if (-not $envMap[$name].StartsWith($sandbox + '\', [System.StringComparison]::OrdinalIgnoreCase)) { return "$name=$($envMap[$name]) is outside $sandbox" } }
         if ($contract.arguments[0] -ne ('--user-data-dir=' + $envMap['HERMES_DESKTOP_USER_DATA_DIR'])) { return "switch $($contract.arguments[0])" }
         if ($envMap['HERMES_HOME'] -ne (Join-Path $envMap['HERMES_DESKTOP_USER_DATA_DIR'] 'hermes-home')) { return "HERMES_HOME $($envMap['HERMES_HOME'])" }
-        foreach ($name in @('userData', 'hermesHome', 'profile', 'roaming', 'local', 'temp')) { if (-not (Test-Path -LiteralPath $contract.layout.$name)) { return "$name was not created" } }
+        foreach ($name in @('userData', 'hermesHome', 'profile', 'roaming', 'local', 'temp', 'gatewayLocks')) { if (-not (Test-Path -LiteralPath $contract.layout.$name)) { return "$name was not created" } }
+        if ($envMap['HERMES_GATEWAY_LOCK_DIR'] -ne $contract.layout.gatewayLocks) { return "lock dir $($envMap['HERMES_GATEWAY_LOCK_DIR'])" }
         if (-not (Test-Path -LiteralPath (Join-Path $sandbox '.hermes-clarify-candidate-sandbox'))) { return 'no sandbox marker' }
     }
     Assert-Case 'the isolation flags are set and nothing from the real user environment leaks in' {
         foreach ($name in @('HERMES_DESKTOP_IGNORE_EXISTING', 'HERMES_DESKTOP_ISOLATED_BACKEND', 'HERMES_DESKTOP_SKIP_PROTOCOL_REGISTRATION')) { if ($envMap[$name] -ne '1') { return "$name=$($envMap[$name])" } }
         if ($envMap['HERMES_DESKTOP_APP_NAME'] -ne 'HermesClarifyCandidate-abcdef0') { return "app name $($envMap['HERMES_DESKTOP_APP_NAME'])" }
-        foreach ($name in @('OPENAI_API_KEY', 'GITHUB_TOKEN', 'HERMES_FOO', 'NODE_OPTIONS', 'ELECTRON_RUN_AS_NODE', 'PYTHONPATH')) { if ($envMap.ContainsKey($name)) { return "$name leaked into the candidate" } }
+        foreach ($name in @('OPENAI_API_KEY', 'GITHUB_TOKEN', 'HERMES_FOO', 'NODE_OPTIONS', 'ELECTRON_RUN_AS_NODE', 'PYTHONPATH', 'XDG_STATE_HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR')) { if ($envMap.ContainsKey($name)) { return "$name leaked into the candidate" } }
         if (-not $envMap.ContainsKey('SystemRoot') -or -not $envMap.ContainsKey('PATH')) { return 'SystemRoot or PATH was dropped; Windows programs and Python sockets need them' }
         foreach ($path in $contract.refusedLocations) { if ($envMap.Values -contains $path) { return "a real location $path is in the candidate environment" } }
     }

@@ -17918,7 +17918,8 @@ ipcMain.handle('hermes:deep-link-ready', () => {
 function registerDeepLinkProtocol() {
   registerDeepLinkProtocolWith({
     app, protocol: HERMES_PROTOCOL, env: process.env, defaultApp: Boolean(process.defaultApp),
-    argv: process.argv, execPath: process.execPath, resolve: entry => path.resolve(entry), log: rememberLog
+    argv: process.argv, execPath: process.execPath, resolve: entry => path.resolve(entry), log: rememberLog,
+    source: INSTALL_STAMP?.source
   })
 }
 

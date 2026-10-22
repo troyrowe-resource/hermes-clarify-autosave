@@ -15,6 +15,9 @@ import type { Locator, Page, WebSocketRoute } from '@playwright/test'
 
 import { MIXED_CLARIFY_QUESTIONS, type MockServer } from '../../../tests-js/scripts/mock-server'
 
+import type { CoreSandbox } from './core/harness'
+import { type RemoteBackend, startRemoteBackend } from './core/remote-helpers'
+import { sandboxHomeEnv } from './sandbox-home-env'
 import { expect } from './test'
 
 const EVIDENCE = process.env.HERMES_E2E_EVIDENCE_DIR
@@ -37,6 +40,35 @@ export function writeObservations(name: string, data: unknown): void {
   if (EVIDENCE) {
     fs.mkdirSync(EVIDENCE, { recursive: true })
     fs.writeFileSync(path.join(EVIDENCE, name), `${JSON.stringify(data, null, 2)}\n`, 'utf8')
+  }
+}
+
+// ─── A remote `hermes serve` backend ───────────────────────────────────
+
+/**
+ * `hermes serve` for `sandbox`, spawned by the test (a Desktop attached by URL + token to a backend on "another
+ * machine"), with the OS user's home and state locations moved into the sandbox as well. `startRemoteBackend` sets
+ * only `HOME`, so on Windows (which reads `USERPROFILE` instead) or with an `XDG_STATE_HOME` in the runner's
+ * environment the backend's host-wide rendezvous lock (one serve per OS user) would be the REAL user's. It copies
+ * this process's environment when it spawns (dropping `HERMES_*`, which is why the XDG state dir, not
+ * `HERMES_GATEWAY_LOCK_DIR`, carries the lock directory here), so the variables are set only for that moment.
+ */
+export async function startServeBackend(sandbox: CoreSandbox): Promise<RemoteBackend> {
+  const sandboxed = { ...sandboxHomeEnv(sandbox.home), XDG_STATE_HOME: path.join(sandbox.root, 'state') }
+  const original = Object.fromEntries(Object.keys(sandboxed).map(key => [key, process.env[key]]))
+
+  Object.assign(process.env, sandboxed)
+
+  try {
+    return await startRemoteBackend(sandbox)
+  } finally {
+    for (const [key, value] of Object.entries(original)) {
+      if (value === undefined) {
+        delete process.env[key]
+      } else {
+        process.env[key] = value
+      }
+    }
   }
 }
 
@@ -134,16 +166,22 @@ const threadViewport = (page: Page): Locator =>
   page.locator('[data-slot="aui_thread-viewport"]').filter({ visible: true }).first()
 
 /**
- * Open a conversation from the sidebar by the title its row shows and wait until the thread really shows it (the
- * previous conversation's cards stay on screen until the switch lands). A conversation is titled by its first
- * prompt, which is also what the thread shows; a `hermes serve` backend lists it as "Untitled session" instead, so
- * `threadText` names what the thread must show when it differs from the row.
+ * Open a conversation from the sidebar by its title (its first prompt) and wait until the thread really shows it:
+ * the previous conversation's cards stay on screen until the switch lands. A `hermes serve` backend lists a
+ * conversation as "Untitled session" until it has derived a title, so the row is found under either label, the
+ * prompt's own preferred.
  */
-export async function openSession(page: Page, rowTitle: string, threadText = rowTitle): Promise<void> {
+export async function openSession(page: Page, title: string): Promise<void> {
+  const sidebar = page.locator('[data-slot="sidebar"]')
+  const titled = sidebar.getByText(title, { exact: true })
+  const untitled = sidebar.getByText('Untitled session', { exact: true })
+
+  await titled.or(untitled).first().waitFor()
+
   // The row's own text: a row also carries a drag handle (a `role=button` span labelled "Reorder <title>") that
   // matches by name but does not open anything.
-  await page.locator('[data-slot="sidebar"]').getByText(rowTitle, { exact: true }).first().click()
-  await expect(threadViewport(page)).toContainText(threadText, { timeout: 30_000 })
+  await ((await titled.count()) > 0 ? titled : untitled).first().click()
+  await expect(threadViewport(page)).toContainText(title, { timeout: 30_000 })
 }
 
 export const liveForms = (page: Page): Locator => page.locator('form[data-clarify-batch]')

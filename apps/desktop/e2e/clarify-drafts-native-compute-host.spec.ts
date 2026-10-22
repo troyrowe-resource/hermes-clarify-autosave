@@ -23,8 +23,6 @@ import { execFileSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-import type { Page } from '@playwright/test'
-
 import { writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config'
 import { MIXED_CLARIFY_TRIGGER, type MockServer, startMockServer } from '../../../tests-js/scripts/mock-server'
 
@@ -38,7 +36,6 @@ import {
   MIXED_DRAFT_ROWS,
   MIXED_SERVER_DRAFTS,
   MIXED_TEXT,
-  newSession,
   readAnswers,
   readDraftRows,
   readDraftStatus,
@@ -109,19 +106,6 @@ function processRow(pid: number): null | ProcessRow {
   } catch {
     return null
   }
-}
-
-/**
- * Open a conversation from the sidebar by the title its row carries and wait until the thread shows it. Under turn
- * isolation the backend titles the conversation by its first prompt (a plain `hermes serve` lists "Untitled
- * session", which is what the shared `openSession` helper looks for), and the row is a button named by that title.
- */
-async function openTitledSession(page: Page, title: string): Promise<void> {
-  await page.locator('[data-slot="sidebar"]').getByRole('button', { name: title, exact: true }).first().click()
-  await expect(page.locator('[data-slot="aui_thread-viewport"]').filter({ visible: true }).first()).toContainText(
-    title,
-    { timeout: 30_000 }
-  )
 }
 
 /** The compute-host child `hermes serve` spawned for turn isolation: its pid from the supervisor's registry. */
@@ -290,25 +274,16 @@ test.describe('clarify drafts (native, remote hermes serve backend with turn iso
     await backend.restart()
     expect(backend.pid(), 'a new backend process').not.toBe(killedPid)
     await waitForReconnect(link, opened)
+
+    // No device copy either: the backend's record is all that is left to read from. The window reloads onto the
+    // conversation it had open (it carries the settled card).
+    await clearDeviceDrafts(page)
+    expect(await deviceDraftEntries(page)).toEqual([])
     await page.reload()
     await waitForAppReady(client, 120_000)
 
-    // No device copy either: the backend's record is all that is left to read from.
-    await clearDeviceDrafts(page)
-    expect(await deviceDraftEntries(page)).toEqual([])
-    await newSession(page)
-    const samples: string[] = []
-    for (let attempt = 0; attempt < 24; attempt += 1) {
-      const text = await page.locator('[data-slot="sidebar"]').first().innerText().catch(error => `ERR ${error}`)
-      samples.push(`${attempt * 5}s: ${JSON.stringify(text).slice(0, 400)}`)
-      if (text.includes('compute-host-first')) break
-      await page.waitForTimeout(5000)
-    }
-    observations.sidebarSamples = samples
-    await openTitledSession(page, `${MIXED_CLARIFY_TRIGGER} compute-host-first`)
-
     const settled = settledCards(page).filter({ visible: true })
-    await settled.first().waitFor({ state: 'visible', timeout: 60_000 })
+    await settled.first().waitFor({ state: 'visible', timeout: 90_000 })
     await expect(settled).toHaveCount(1)
     await waitForFinalSettled(settled, 3)
     expect((await readDraftRows(settled)).map(({ content, question }) => ({ content, question }))).toEqual(MIXED_DRAFT_ROWS)

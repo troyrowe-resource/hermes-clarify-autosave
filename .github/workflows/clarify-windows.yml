@@ -76,6 +76,10 @@ jobs:
     name: Desktop build + clarify drafts native E2E (windows-2025 x64)
     runs-on: windows-2025
     timeout-minutes: 60
+    env:
+      # Specs of this gate that do not follow the clarify-drafts-native*.spec.ts naming, by file name under
+      # apps/desktop/e2e. They run with the glob's specs, are guarded like them, and are proven by the Playwright JSON.
+      CLARIFY_EXTRA_SPECS: batch-clarify.spec.ts
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -183,7 +187,9 @@ jobs:
         if: always() && steps.build.outcome == 'success'
         run: |
           set -euo pipefail
-          python -S scripts/clarify_ci/evidence.py guard
+          extra=()
+          for name in $CLARIFY_EXTRA_SPECS; do extra+=(--extra-spec "$name"); done
+          python -S scripts/clarify_ci/evidence.py guard "${extra[@]}"
           python -S scripts/clarify_ci/evidence.py sentinels --out "$CLARIFY_EVIDENCE/isolation/before.json"
           python -S scripts/clarify_ci/evidence.py stage "$CLARIFY_EVIDENCE/native"
 
@@ -206,6 +212,10 @@ jobs:
           shopt -s nullglob
           specs=(e2e/clarify-drafts-native*.spec.ts)
           if [ "${#specs[@]}" -eq 0 ]; then echo "::error::no e2e/clarify-drafts-native*.spec.ts found"; exit 1; fi
+          for name in $CLARIFY_EXTRA_SPECS; do
+            test -f "e2e/$name" || { echo "::error::extra spec e2e/$name not found"; exit 1; }
+            specs+=("e2e/$name")
+          done
           printf 'native spec: %s\n' "${specs[@]}"
           npx --no playwright test "${specs[@]}" --workers=1 --retries=0
 
@@ -222,7 +232,10 @@ jobs:
         id: verify
         if: always() && steps.preflight.outcome == 'success'
         run: |
-          python -S scripts/clarify_ci/evidence.py verify \
+          set -euo pipefail
+          extra=()
+          for name in $CLARIFY_EXTRA_SPECS; do extra+=(--extra-spec "$name"); done
+          python -S scripts/clarify_ci/evidence.py verify "${extra[@]}" \
             --evidence "$CLARIFY_EVIDENCE/native" \
             --results apps/desktop/playwright-report/results.json \
             --out "$CLARIFY_EVIDENCE/native-verdict.json"
@@ -295,16 +308,16 @@ jobs:
         if: always()
         run: python -S scripts/clarify_ci/evidence.py metadata --out "$CLARIFY_EVIDENCE/metadata/run.json" --set "build.variant=bundled"
 
-      # Runner-local speed-up only (the same step the upstream release builds run); the VM is discarded afterwards.
-      - name: Exclude build paths from Defender scanning
+      # The two build roots are excluded from scanning so the multi-gigabyte build is not rescanned file by file.
+      # That is the only Defender setting touched: real-time protection stays on, and the runner is a VM that is
+      # discarded when the job ends. runner-facts-*.json record the state Defender was really in.
+      - name: Exclude the two build roots from Defender scanning
         shell: pwsh
         run: |
-          foreach ($path in @('C:\hsb', $env:RUNNER_TEMP, $env:GITHUB_WORKSPACE)) {
-            try { Add-MpPreference -ExclusionPath $path; Write-Host "Defender exclusion added for $path" }
-            catch { Write-Host "Defender exclusion not applied for $path ($($_.Exception.Message)); continuing" }
+          foreach ($path in @('C:\hsb', $env:RUNNER_TEMP)) {
+            try { Add-MpPreference -ExclusionPath $path; Write-Host "Defender scan exclusion added for $path" }
+            catch { Write-Host "Defender scan exclusion not applied for $path ($($_.Exception.Message)); continuing" }
           }
-          try { Set-MpPreference -DisableRealtimeMonitoring $true; Write-Host 'Defender real-time monitoring disabled for this build job' }
-          catch { Write-Host "Could not disable Defender real-time monitoring ($($_.Exception.Message)); continuing" }
 
       - name: Record runner facts before the build
         continue-on-error: true
@@ -337,7 +350,7 @@ jobs:
       - name: Prepare the complete desktop build (one-commit bundled variant)
         id: prepare
         working-directory: C:/hsb
-        timeout-minutes: 20
+        timeout-minutes: 25
         run: |
           set -euo pipefail
           python scripts/bundles/desktop.py --commit "$GITHUB_SHA" --variant bundled --prepare-only \
@@ -361,7 +374,7 @@ jobs:
       - name: Build the unsigned Windows app (electron-builder, publishing never)
         id: build
         working-directory: C:/hsb
-        timeout-minutes: 22
+        timeout-minutes: 30
         env:
           AZURE_SIGN_ENDPOINT: ''
           AZURE_SIGN_ACCOUNT: ''

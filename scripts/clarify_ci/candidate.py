@@ -198,12 +198,51 @@ def audit_app(app: Path, commit: str, authenticode: dict | None = None) -> tuple
     stamp, payload = _audit_stamp(resources, commit, problems), _audit_payload(resources, commit, problems)
     facts["stamp"] = stamp
     facts["payload"] = payload
+    facts["asar_package"] = _audit_asar(resources, commit, problems) if (resources / "app.asar").is_file() else {}
     files, links = tree_files(app)
     facts["file_count"] = len(files)
     facts["total_bytes"] = sum(path.stat().st_size for path in files)
     if links:
         problems.append(f"symlinks/junctions would not survive a zip: {links[:5]}")
     return facts, problems
+
+
+def read_asar_file(archive: Path, name: str) -> bytes:
+    """One file's bytes from an Electron asar archive (the format ``@electron/asar`` writes: a size pickle,
+    a header pickle holding the JSON file table, then the packed file data)."""
+    with archive.open("rb") as stream:
+        prefix = stream.read(16)
+        if len(prefix) < 16:
+            raise ValueError("not an asar archive: shorter than its header")
+        header_size = struct.unpack_from("<I", prefix, 4)[0]
+        json_length = struct.unpack_from("<I", prefix, 12)[0]
+        if json_length > header_size:
+            raise ValueError("not an asar archive: the file table is longer than its header")
+        node = json.loads(stream.read(json_length))
+        for part in name.split("/"):
+            node = node["files"][part]
+        if node.get("unpacked"):
+            raise ValueError(f"{name} is stored outside the archive (unpacked)")
+        stream.seek(8 + header_size + int(node["offset"]))
+        return stream.read(int(node["size"]))
+
+
+def _audit_asar(resources: Path, commit: str, problems: list[str]) -> dict:
+    """The names Electron derives its default user data directory from, before any app code runs: they must be the
+    candidate's own, so even a start that ignores every override cannot resolve to the installed app's folder."""
+    try:
+        package = json.loads(read_asar_file(resources / "app.asar", "package.json").decode("utf-8-sig"))
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        problems.append(f"cannot read package.json from resources/app.asar: {error!r}")
+        return {}
+    names = {key: package.get(key) for key in ("name", "productName", "desktopName")}
+    for key in ("name", "productName"):
+        if str(names[key] or "").strip().lower() in ("", "hermes"):
+            problems.append(f"app.asar package.json {key}={names[key]!r}: Electron's default user data directory "
+                            "would be the installed Hermes app's")
+    if commit[:7] not in str(names["productName"] or ""):
+        problems.append(f"app.asar package.json productName={names['productName']!r} does not carry the commit {commit[:7]}")
+    return names
 
 
 def _audit_stamp(resources: Path, commit: str, problems: list[str]) -> dict:
@@ -424,9 +463,9 @@ def verify_archive(archive: Path, manifest_path: Path, extract_to: Path, commit:
     return facts, problems
 
 
-def build_verdict(manifest: dict, archive_verify: dict, evidence: dict, outcomes: dict[str, str]) -> dict:
-    """One verdict for the candidate: the zip that was verified is the zip the manifest names, the packaged
-    app passed its evidence, and every step the workflow ran succeeded."""
+def build_verdict(manifest: dict, archive_verify: dict, evidence: dict[str, dict], outcomes: dict[str, str]) -> dict:
+    """One verdict for the candidate: the zip that was verified is the zip the manifest names, every packaged-app
+    run (``evidence``: label -> the verdict JSON ``evidence.py verify`` wrote) passed, and every step succeeded."""
     claim = manifest.get("archive") or {}
     facts = archive_verify.get("facts") or {}
     problems = [f"step {name} was {outcome}" for name, outcome in sorted(outcomes.items()) if outcome != "success"]
@@ -434,9 +473,12 @@ def build_verdict(manifest: dict, archive_verify: dict, evidence: dict, outcomes
         problems.append("the downloaded archive did not verify against its manifest")
     if facts.get("sha256") != claim.get("sha256") or not claim.get("sha256"):
         problems.append("the verified archive is not the archive the manifest names")
-    if evidence.get("verdict") != "passed":
-        problems.append("the packaged-app evidence did not verify")
-    problems += [f"packaged evidence: {item}" for item in evidence.get("problems") or []]
+    if not evidence:
+        problems.append("no packaged-app evidence was given")
+    for label, item in sorted(evidence.items()):
+        if item.get("verdict") != "passed":
+            problems.append(f"{label} evidence did not verify")
+        problems += [f"{label} evidence: {problem}" for problem in item.get("problems") or []]
     return {
         "schema": 1,
         "kind": "hermes-clarify-autosave-windows-candidate-acceptance",
@@ -449,7 +491,8 @@ def build_verdict(manifest: dict, archive_verify: dict, evidence: dict, outcomes
         "exe": {"path": (manifest.get("app") or {}).get("exe"), "sha256": (manifest.get("app") or {}).get("exe_sha256")},
         "steps": dict(sorted(outcomes.items())),
         "archive_verification": {"verdict": archive_verify.get("verdict"), "files_checked": facts.get("files_checked")},
-        "packaged_evidence": {"verdict": evidence.get("verdict"), "specs": evidence.get("specs"), "stats": evidence.get("stats")},
+        "packaged_evidence": {label: {"verdict": item.get("verdict"), "specs": item.get("specs"), "stats": item.get("stats")}
+                              for label, item in sorted(evidence.items())},
         "signing": (manifest.get("signing") or {}).get("status"),
         "publication": (manifest.get("publication") or {}).get("status"),
         "scope": "Passed on a clean GitHub-hosted windows-2025 x64 runner, from the downloaded and re-verified zip. "
@@ -512,8 +555,13 @@ def _verdict(args) -> int:
         if not sep or not name:
             raise CandidateError(f"--outcome expects name=value, got {item!r}")
         outcomes[name] = value or "not-run"
-    verdict = build_verdict(_read_json(Path(args.manifest)), _read_json(Path(args.archive_verify)),
-                            _read_json(Path(args.evidence_verdict)), outcomes)
+    evidence: dict[str, dict] = {}
+    for item in args.evidence_verdict:
+        label, sep, path = item.partition("=")
+        if not sep or not label or not path:
+            raise CandidateError(f"--evidence-verdict expects label=path, got {item!r}")
+        evidence[label] = _read_json(Path(path))
+    verdict = build_verdict(_read_json(Path(args.manifest)), _read_json(Path(args.archive_verify)), evidence, outcomes)
     _write_json(Path(args.out), verdict)
     for problem in verdict["problems"]:
         print(f"::error::candidate acceptance: {problem}", file=sys.stderr)
@@ -584,7 +632,8 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("verdict")
     p.add_argument("--manifest", required=True, help="the outer MANIFEST.json that travelled with the zip")
     p.add_argument("--archive-verify", required=True, help="the JSON `verify` wrote")
-    p.add_argument("--evidence-verdict", required=True, help="the JSON `evidence.py verify` wrote for the packaged spec")
+    p.add_argument("--evidence-verdict", action="append", default=[], metavar="LABEL=PATH",
+                   help="the JSON `evidence.py verify` wrote for one packaged-app run (repeatable; every one must pass)")
     p.add_argument("--outcome", action="append", default=[], help="step=outcome (every one must be success)")
     p.add_argument("--out", required=True)
     p.set_defaults(func=_verdict)

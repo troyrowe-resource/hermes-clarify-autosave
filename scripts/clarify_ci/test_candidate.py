@@ -51,15 +51,33 @@ def _stamp(**overrides) -> dict:
 
 
 METHODS = '@method("clarify.draft")\n@method("clarify.drafts")\n@method("clarify.drafts.discard")\n'
+PACKAGE_JSON = {"name": "HermesBundledCommitabcdef0", "productName": "Hermes Agent abcdef0", "desktopName": "com.example.hermes"}
 
 
-def _fake_app(root: Path, **stamp_overrides) -> Path:
+def _asar(files: dict[str, bytes]) -> bytes:
+    """An Electron asar archive: a size pickle, the header pickle holding the JSON file table, then the file data."""
+    table: dict[str, dict] = {}
+    data = b""
+    for name, content in files.items():
+        node = table
+        parts = name.split("/")
+        for part in parts[:-1]:
+            node = node.setdefault(part, {"files": {}})["files"]
+        node[parts[-1]] = {"size": len(content), "offset": str(len(data))}
+        data += content
+    header = json.dumps({"files": table}, separators=(",", ":")).encode()
+    padded = header + b"\0" * (-len(header) % 4)
+    pickle = struct.pack("<II", 4 + len(padded), len(header)) + padded
+    return struct.pack("<II", 4, len(pickle)) + pickle + data
+
+
+def _fake_app(root: Path, package: dict | None = None, **stamp_overrides) -> Path:
     app = root / "win-unpacked"
     resources = app / "resources"
     payload = resources / "agent-payload"
     repo = payload / "hermes-agent"
     for relative, data in {
-        EXE: _pe(), "resources/app.asar": b"asar", "chrome_100_percent.pak": b"pak",
+        EXE: _pe(), "chrome_100_percent.pak": b"pak",
         "resources/agent-payload/tools/python/python.exe": _pe(),
         "resources/agent-payload/venv/Lib/site-packages/dep.py": b"x = 1\n",
         f"resources/agent-payload/bin/{EXE}": _pe(),
@@ -70,6 +88,8 @@ def _fake_app(root: Path, **stamp_overrides) -> Path:
         path = app / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
+    (resources / "app.asar").write_bytes(_asar({"package.json": json.dumps(PACKAGE_JSON if package is None else package).encode(),
+                                                "dist/electron-main.mjs": b"// main\n"}))
     stamp = json.dumps(_stamp(**stamp_overrides), indent=2) + "\n"
     (resources / "install-stamp.json").write_text(stamp, encoding="utf-8")
     (repo / "install-stamp.json").write_text(stamp, encoding="utf-8")
@@ -159,6 +179,38 @@ def test_audit_refuses_a_valid_signature_but_records_an_invalid_one(tmp_path):
     app = _fake_app(tmp_path)
     assert any("VALID Authenticode" in p for p in _problems(app, authenticode={"status": "Valid", "subject": "CN=Someone"}))
     assert _problems(app, authenticode={"status": "HashMismatch", "subject": "CN=Electron"}) == []
+
+
+def test_read_asar_file_reads_packed_files_by_path(tmp_path):
+    archive = tmp_path / "app.asar"
+    archive.write_bytes(_asar({"package.json": b'{"a":1}', "dist/main.mjs": b"main", "dist/deep/x.txt": b"x" * 5}))
+    assert candidate.read_asar_file(archive, "package.json") == b'{"a":1}'
+    assert candidate.read_asar_file(archive, "dist/main.mjs") == b"main"
+    assert candidate.read_asar_file(archive, "dist/deep/x.txt") == b"xxxxx"
+    with pytest.raises(KeyError):
+        candidate.read_asar_file(archive, "nope.json")
+    archive.write_bytes(b"not an archive")
+    with pytest.raises(ValueError):
+        candidate.read_asar_file(archive, "package.json")
+
+
+@pytest.mark.parametrize("package, needle", [
+    ({"name": "hermes", "productName": "Hermes Agent abcdef0"}, "name='hermes'"),
+    ({"name": "HermesBundledCommitabcdef0", "productName": "Hermes"}, "productName='Hermes'"),
+    ({"name": "HermesBundledCommitabcdef0"}, "productName=None"),
+    ({"name": "HermesBundledCommitabcdef0", "productName": "Hermes Agent 1234567"}, "does not carry the commit abcdef0"),
+])
+def test_audit_refuses_names_that_would_put_a_direct_start_in_the_installed_apps_user_data(tmp_path, package, needle):
+    problems = _problems(_fake_app(tmp_path, package=package))
+    assert any(needle in problem for problem in problems), problems
+
+
+def test_audit_records_the_asar_names_and_refuses_an_unreadable_archive(tmp_path):
+    facts, problems = candidate.audit_app(_fake_app(tmp_path), COMMIT)
+    assert problems == [] and facts["asar_package"] == PACKAGE_JSON
+    app = _fake_app(tmp_path / "broken")
+    (app / "resources" / "app.asar").write_bytes(b"asar")
+    assert any("cannot read package.json from resources/app.asar" in problem for problem in _problems(app))
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="creating a symlink needs a privilege on Windows")
@@ -327,49 +379,65 @@ def test_verify_checks_the_digest_the_build_job_reported_by_another_route(tmp_pa
     assert any("the build job reported" in problem for problem in problems)
 
 
-def _verdict_inputs(tmp_path, **changes):
+def _verdict_inputs(tmp_path):
+    """The manifest, the archive verification and the evidence of two packaged-app runs, all passing."""
     _, out, manifest = _assemble(tmp_path)
     facts, problems = candidate.verify_archive(out / manifest["archive"]["name"], out / "MANIFEST.json", tmp_path / "x", COMMIT)
     archive_verify = {"facts": facts, "problems": problems, "verdict": "passed" if not problems else "failed"}
-    evidence = {"verdict": "passed", "problems": [], "specs": {"clarify-drafts-packaged.spec.ts": 1}, "stats": {"expected": 1}}
-    manifest = {**manifest, **changes.pop("manifest", {})}
-    return manifest, {**archive_verify, **changes.pop("archive_verify", {})}, {**evidence, **changes.pop("evidence", {})}
+    evidence = {
+        "launcher": {"verdict": "passed", "problems": [], "specs": {"clarify-drafts-packaged.spec.ts": 1}, "stats": {"expected": 1}},
+        "direct": {"verdict": "passed", "problems": [], "specs": {"clarify-drafts-packaged-direct.spec.ts": 1}, "stats": {"expected": 1}},
+    }
+    return manifest, archive_verify, evidence
+
+
+STEPS = {"verify-package": "success", "packaged-e2e": "success", "isolation": "success"}
 
 
 def test_the_acceptance_verdict_passes_only_when_every_part_of_it_does(tmp_path):
     manifest, archive_verify, evidence = _verdict_inputs(tmp_path)
-    steps = {"verify-package": "success", "packaged-e2e": "success", "isolation": "success"}
-    verdict = candidate.build_verdict(manifest, archive_verify, evidence, steps)
+    verdict = candidate.build_verdict(manifest, archive_verify, evidence, STEPS)
     assert verdict["passed"] is True and verdict["problems"] == []
     assert verdict["commit"] == COMMIT and verdict["archive"]["sha256"] == manifest["archive"]["sha256"]
     assert verdict["signing"] == "unsigned" and verdict["publication"] == "disabled"
-    assert "any other machine" in verdict["scope"]
+    assert sorted(verdict["packaged_evidence"]) == ["direct", "launcher"] and "any other machine" in verdict["scope"]
 
-    failed = candidate.build_verdict(manifest, archive_verify, evidence, {**steps, "isolation": "failure"})
+    failed = candidate.build_verdict(manifest, archive_verify, evidence, {**STEPS, "isolation": "failure"})
     assert failed["passed"] is False and any("isolation was failure" in problem for problem in failed["problems"])
-    skipped = candidate.build_verdict(manifest, archive_verify, evidence, {**steps, "packaged-e2e": "skipped"})
-    assert skipped["passed"] is False
-
-    bad_evidence = candidate.build_verdict(manifest, archive_verify, {**evidence, "verdict": "failed", "problems": ["x"]}, steps)
-    assert bad_evidence["passed"] is False and "packaged evidence: x" in bad_evidence["problems"]
+    assert candidate.build_verdict(manifest, archive_verify, evidence, {**STEPS, "packaged-e2e": "skipped"})["passed"] is False
 
     other_zip = {**archive_verify, "facts": {**archive_verify["facts"], "sha256": "0" * 64}}
-    assert not candidate.build_verdict(manifest, other_zip, evidence, steps)["passed"]
-    assert not candidate.build_verdict(manifest, {**archive_verify, "verdict": "failed"}, evidence, steps)["passed"]
+    assert not candidate.build_verdict(manifest, other_zip, evidence, STEPS)["passed"]
+    assert not candidate.build_verdict(manifest, {**archive_verify, "verdict": "failed"}, evidence, STEPS)["passed"]
+
+
+def test_one_failing_packaged_run_fails_the_verdict_and_is_named(tmp_path):
+    manifest, archive_verify, evidence = _verdict_inputs(tmp_path)
+    broken = {**evidence, "direct": {**evidence["direct"], "verdict": "failed", "problems": ["x"]}}
+    verdict = candidate.build_verdict(manifest, archive_verify, broken, STEPS)
+    assert verdict["passed"] is False
+    assert "direct evidence did not verify" in verdict["problems"] and "direct evidence: x" in verdict["problems"]
+    assert "launcher evidence did not verify" not in verdict["problems"]
+    assert "no packaged-app evidence was given" in candidate.build_verdict(manifest, archive_verify, {}, STEPS)["problems"]
 
 
 def test_cli_verdict_and_bundle_env(tmp_path, capsys):
     manifest, archive_verify, evidence = _verdict_inputs(tmp_path)
-    paths = {name: tmp_path / f"{name}.json" for name in ("manifest", "archive", "evidence")}
-    for key, data in (("manifest", manifest), ("archive", archive_verify), ("evidence", evidence)):
+    files = {"manifest": manifest, "archive": archive_verify, "launcher": evidence["launcher"], "direct": evidence["direct"]}
+    paths = {name: tmp_path / f"{name}.json" for name in files}
+    for key, data in files.items():
         paths[key].write_text(json.dumps(data), encoding="utf-8")
     out = tmp_path / "acceptance-verdict.json"
     args = ["verdict", "--manifest", str(paths["manifest"]), "--archive-verify", str(paths["archive"]),
-            "--evidence-verdict", str(paths["evidence"]), "--out", str(out)]
+            "--evidence-verdict", f"launcher={paths['launcher']}", "--evidence-verdict", f"direct={paths['direct']}",
+            "--out", str(out)]
     assert candidate.main(args + ["--outcome", "packaged-e2e=success"]) == 0
     assert json.loads(out.read_text(encoding="utf-8-sig"))["passed"] is True
     assert candidate.main(args + ["--outcome", "packaged-e2e=failure"]) == 1
     assert "packaged-e2e was failure" in capsys.readouterr().err
+    assert candidate.main(["verdict", "--manifest", str(paths["manifest"]), "--archive-verify", str(paths["archive"]),
+                           "--evidence-verdict", str(paths["launcher"]), "--out", str(out)]) == 1, "label=path is required"
+    assert "expects label=path" in capsys.readouterr().err
     assert candidate.main(["bundle-env"]) == 0
     assert json.loads(capsys.readouterr().out) == candidate.BUNDLE_ENV == {"HERMES_DATA_DIR_SUFFIX": "-clarify-candidate", "HERMES_HOME": None}
 

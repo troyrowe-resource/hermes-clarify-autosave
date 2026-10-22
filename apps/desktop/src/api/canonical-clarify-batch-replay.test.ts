@@ -97,8 +97,17 @@ test('after a reconnect the replayed batch card is restored with its locks and d
 
     // The shared channel re-delivers `open_requests` from the RAW answer before the caller sees it
     // (apps/shared JsonRpcRequestChannel.handleFrame); this stands in for that frame.
-    const channel = (client as unknown as { channel: { deliverRequest: typeof deliver } }).channel
-    const deliver = (params: Record<string, unknown>) => channel.deliverRequest(BATCH.id, BATCH.method, params, true)
+    const channel = (
+      client as unknown as {
+        channel: {
+          deliverRequest: (id: string, method: string, params: Record<string, unknown>, replayed?: boolean) => boolean
+        }
+      }
+    ).channel
+
+    const deliver = (params: Record<string, unknown>): boolean =>
+      channel.deliverRequest(BATCH.id, BATCH.method, params, true)
+
     deliver(BATCH.params)
     const snapshot = await client.request<SessionResumeResult>('session.resume', { session_id: 'waiting' })
 

@@ -1,7 +1,10 @@
 # Shared by Start-HermesClarifyCandidate.ps1 and Stop-HermesClarifyCandidate.ps1 (dot-sourced; functions only).
 #
 # What this guarantees, for every way the candidate is started through its launcher:
-#   * every state location Hermes and Electron use is a directory inside ONE disposable sandbox root;
+#   * every state location Hermes and Electron use is a directory inside ONE disposable sandbox root, including
+#     the user profile (Python's Path.home() and Node's os.homedir() read USERPROFILE on Windows, never HOME) and the
+#     per-OS-user rendezvous directory in which Hermes gateways find each other (HERMES_GATEWAY_LOCK_DIR, which
+#     otherwise lives under the profile): a candidate can never attach to the user's real backend;
 #   * the sandbox is never, never inside, and never an ancestor of a real Hermes location of the
 #     current user (default home, legacy home, installed app's user data and updater cache, any
 #     HERMES_HOME the user or the machine has set);
@@ -120,6 +123,7 @@ function Get-SandboxLayout {
         roaming    = (Join-Path $profile 'AppData\Roaming')
         local      = (Join-Path $profile 'AppData\Local')
         temp       = (Join-Path $RootFull 'tmp')
+        gatewayLocks = (Join-Path $RootFull 'gateway-locks')
     }
 }
 
@@ -141,7 +145,7 @@ function Assert-SafeSandbox {
             Stop-Refused 2 "the sandbox root '$rootFull' is, or contains, $($container.Why) ($($container.Path))."
         }
     }
-    foreach ($name in @('root', 'userData', 'hermesHome', 'profile', 'roaming', 'local', 'temp')) {
+    foreach ($name in @('root', 'userData', 'hermesHome', 'profile', 'roaming', 'local', 'temp', 'gatewayLocks')) {
         if (Test-ReparsePoint $layout[$name]) {
             Stop-Refused 2 "'$($layout[$name])' is a link or junction; the sandbox must be a plain directory tree."
         }
@@ -156,7 +160,7 @@ function Assert-SafeSandbox {
 
 function Initialize-Sandbox {
     param($Layout, [string]$Commit)
-    foreach ($name in @('root', 'userData', 'hermesHome', 'profile', 'roaming', 'local', 'temp')) {
+    foreach ($name in @('root', 'userData', 'hermesHome', 'profile', 'roaming', 'local', 'temp', 'gatewayLocks')) {
         New-Item -ItemType Directory -Force -Path $Layout[$name] | Out-Null
     }
     $marker = Join-Path $Layout.root $script:SandboxMarker
@@ -203,7 +207,9 @@ function Get-CandidateEnvironment {
     # The complete environment of the candidate process, as a hashtable. Nothing is inherited unless it is
     # needed to run a Windows program and cannot carry a credential or a Hermes/runtime override.
     param($Layout, [string]$Commit)
-    $drop = '^(?:PYTHON|VIRTUAL_ENV|CONDA|NODE_|NPM_|ELECTRON_|VITE_|UV_|PM_|HERMES_|GITHUB_|RUNNER_|ACTIONS_)'
+    # Runtime overrides, Hermes variables, CI state, and the variables other tools use to find a configuration or a
+    # credential store outside the profile (XDG_*, CODEX_HOME, CLAUDE_CONFIG_DIR, provider settings).
+    $drop = '^(?:PYTHON|VIRTUAL_ENV|CONDA|NODE_|NPM_|ELECTRON_|VITE_|UV_|PM_|HERMES_|GITHUB_|RUNNER_|ACTIONS_|XDG_|CLAUDE_|CODEX_|ANTHROPIC_|OPENAI_|OPENROUTER_|NOUS_|GEMINI_|GOOGLE_)'
     $secret = '(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)'
     $environment = @{}
     $inherited = [System.Environment]::GetEnvironmentVariables('Process')
@@ -218,6 +224,7 @@ function Get-CandidateEnvironment {
     $overrides = [ordered]@{
         HERMES_HOME                                = $Layout.hermesHome
         HERMES_DESKTOP_USER_DATA_DIR               = $Layout.userData
+        HERMES_GATEWAY_LOCK_DIR                    = $Layout.gatewayLocks
         HERMES_DESKTOP_IGNORE_EXISTING             = '1'
         HERMES_DESKTOP_ISOLATED_BACKEND            = '1'
         HERMES_DESKTOP_SKIP_PROTOCOL_REGISTRATION  = '1'

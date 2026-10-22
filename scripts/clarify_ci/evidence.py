@@ -5,11 +5,12 @@ Each subcommand does one bounded job and exits non-zero when its claim does not 
   metadata   allowlisted run/source facts (never the raw environment)
   stage      create an empty, owned evidence directory (refuses a non-empty one)
   guard      the E2E fixture still sets every isolation flag this workflow relies on,
-             and every native spec drives the app through that fixture
+             and every native spec (and every --extra-spec) drives the app through that fixture
   sentinels  record which real-install locations exist (default homes, protocol keys, any --watch)
              and, beside the snapshot, the bounded entry names inside any that do
   isolation  fail if a sentinel absent before the native run exists after it
-  verify     Playwright JSON + per-spec evidence prove every spec ran once, unretried, and passed
+  verify     Playwright JSON + per-spec evidence prove every spec ran once, unretried, and passed;
+             an --extra-spec outside the naming convention is proven by the Playwright JSON alone
   collect    copy known evidence files into a size-capped artifact directory
   gate       write the step summary from real step outcomes; fail unless all succeeded
 
@@ -128,6 +129,11 @@ def spec_slug(name: str) -> str:
     return match.group("slug") if match else name.removesuffix(".spec.ts")
 
 
+def _extra_specs(args) -> list[str]:
+    """Specs that belong to the gate but do not follow the ``clarify-drafts-<slug>.spec.ts`` convention."""
+    return [_base_name(name) for name in args.extra_spec or []]
+
+
 def _requested_specs(args) -> list[str]:
     """Spec file names to verify: the explicit ones, else every spec the glob finds."""
     if args.spec:
@@ -144,6 +150,12 @@ def guard(args) -> int:
         specs = [Path(args.specs_dir) / name for name in discover_specs(Path(args.specs_dir), args.spec_glob)]
         if not specs:
             missing.append(f"no native spec under {args.specs_dir} matches {args.spec_glob}")
+    for extra in _extra_specs(args):
+        path = Path(args.specs_dir) / extra
+        if not path.is_file():
+            missing.append(f"extra spec {path} does not exist")
+        elif path not in specs:
+            specs.append(path)
     for spec in specs:
         source = spec.read_text(encoding="utf-8-sig")
         # The original spec keeps its strict rule; later ones may restart the app through the fixture
@@ -430,6 +442,7 @@ def _slug_expectations(items: Sequence[str]) -> dict[str, list[str]]:
 def verify(args) -> int:
     problems: list[str] = []
     specs = _requested_specs(args)
+    extras = [name for name in _extra_specs(args) if name not in specs]
     if not specs:
         problems.append(f"no native spec found under {args.specs_dir} matching {args.spec_glob}")
     try:
@@ -437,8 +450,8 @@ def verify(args) -> int:
     except (OSError, ValueError) as error:
         report = None
         problems.append(f"unreadable Playwright JSON report: {error}")
-    if report is not None and specs:
-        problems += check_results(report, specs)
+    if report is not None and (specs or extras):
+        problems += check_results(report, [*specs, *extras])
     evidence = Path(args.evidence)
     slugs = [spec_slug(name) for name in specs]
     expectations = _slug_expectations(args.expect_observation or [])
@@ -452,7 +465,7 @@ def verify(args) -> int:
         "verdict": "failed" if problems else "passed",
         "problems": problems,
         "specs": {
-            name: len(_tests_of(report, name)) if report is not None else 0 for name in specs
+            name: len(_tests_of(report, name)) if report is not None else 0 for name in [*specs, *extras]
         },
         "evidence_files": sorted(p.name for p in evidence.glob("*")) if evidence.is_dir() else [],
         "stats": (report or {}).get("stats"),
@@ -460,7 +473,8 @@ def verify(args) -> int:
     _write_json(Path(args.out), summary)
     for problem in problems:
         print(f"::error::{args.label} evidence: {problem}", file=sys.stderr)
-    print(f"{args.label} evidence verdict: {summary['verdict']} ({len(specs)} spec(s): {', '.join(specs) or 'none'})")
+    named = [*specs, *extras]
+    print(f"{args.label} evidence verdict: {summary['verdict']} ({len(named)} spec(s): {', '.join(named) or 'none'})")
     return 1 if problems else 0
 
 
@@ -544,6 +558,10 @@ def gate(args) -> int:
 
 def _add_spec_selection(parser: argparse.ArgumentParser, help_text: str) -> None:
     parser.add_argument("--spec", action="append", help=help_text)
+    parser.add_argument("--extra-spec", action="append",
+                        help="spec file name (repeatable) that is part of the gate but is not named "
+                             "clarify-drafts-<slug>.spec.ts: checked in the Playwright JSON (and by guard), "
+                             "with no per-spec evidence files")
     parser.add_argument("--specs-dir", default=SPEC_DIR)
     parser.add_argument("--spec-glob", default=NATIVE_SPEC_GLOB)
 

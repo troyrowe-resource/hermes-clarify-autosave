@@ -1,11 +1,13 @@
 /**
- * Helpers for the packaged-candidate acceptance spec (`clarify-drafts-packaged.spec.ts`): the launch contract the
- * SHIPPED launcher prints, the checks that make a launch provably isolated, path and process comparisons, and the
- * shipped Start/Stop entry points.
+ * Helpers for the packaged-candidate acceptance specs (`clarify-drafts-packaged.spec.ts`, started through the shipped
+ * launcher, and `clarify-drafts-packaged-direct.spec.ts`, started without it): the launch contract the SHIPPED
+ * launcher prints, the checks that make a launch provably isolated, the identity a direct start is entitled to,
+ * path and process comparisons, and the shipped Start/Stop entry points.
  *
  * Everything pure takes its platform explicitly, so it is provable on any host
- * (`clarify-packaged-fixture.unit.test.ts`). Only `runShipped`, `sha256File` and `copyBackendLogs` touch the machine.
- * Nothing here imports the dev fixtures: the packaged spec must never reach a dev Electron or a dev backend.
+ * (`clarify-packaged-fixture.unit.test.ts`). Only `runShipped`, `sha256File`, `copyBackendLogs`, `listEntries`,
+ * `readHostRecords` and the two Playwright probes touch the machine or the app.
+ * Nothing here imports the dev fixtures: a packaged spec must never reach a dev Electron or a dev backend.
  */
 
 import { spawnSync } from 'node:child_process'
@@ -13,6 +15,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 
+import type { ElectronApplication, Page } from '@playwright/test'
 import { z } from 'zod'
 
 import type { NativeProcess } from '../../../tests-js/scripts/desktop-smoke-process'
@@ -49,6 +52,7 @@ export function isInside(parent: string, child: string, platform: Platform = pro
 // ─── The launch contract ───────────────────────────────────────────────
 
 const layoutSchema = z.object({
+  gatewayLocks: z.string(),
   hermesHome: z.string(),
   local: z.string(),
   profile: z.string(),
@@ -123,6 +127,7 @@ const ALLOWED_HERMES_VARIABLES = new Set([
   'HERMES_DESKTOP_ISOLATED_BACKEND',
   'HERMES_DESKTOP_SKIP_PROTOCOL_REGISTRATION',
   'HERMES_DESKTOP_USER_DATA_DIR',
+  'HERMES_GATEWAY_LOCK_DIR',
   'HERMES_HOME'
 ])
 
@@ -132,7 +137,11 @@ const ISOLATION_FLAGS = [
   'HERMES_DESKTOP_SKIP_PROTOCOL_REGISTRATION'
 ]
 
-const LEAKY_VARIABLE = /^(?:PYTHON|VIRTUAL_ENV|CONDA|NODE_|NPM_|ELECTRON_|VITE_|UV_|PM_|GITHUB_|RUNNER_|ACTIONS_)/i
+// Mirrors the launcher's drop list (CandidateCommon.ps1): runtime overrides, CI state, and the variables other tools
+// use to find a configuration or credential store outside the profile.
+const LEAKY_VARIABLE =
+  /^(?:PYTHON|VIRTUAL_ENV|CONDA|NODE_|NPM_|ELECTRON_|VITE_|UV_|PM_|GITHUB_|RUNNER_|ACTIONS_|XDG_|CLAUDE_|CODEX_|ANTHROPIC_|OPENAI_|OPENROUTER_|NOUS_|GEMINI_|GOOGLE_)/i
+
 const SECRETISH_VARIABLE = /(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)/i
 
 /** What every rule may consult: the expectation, the platform's path semantics, and the harness's decoys. */
@@ -151,7 +160,7 @@ type ContractRule = (contract: LaunchContract, check: ContractCheck) => string[]
 const failures = (checks: [boolean, string][]): string[] =>
   checks.filter(([holds]) => !holds).map(([, message]) => message)
 
-const LAYOUT_KEYS = ['userData', 'hermesHome', 'profile', 'roaming', 'local', 'temp'] as const
+const LAYOUT_KEYS = ['userData', 'hermesHome', 'profile', 'roaming', 'local', 'temp', 'gatewayLocks'] as const
 
 const unset = (value: string | undefined): string => value ?? '(unset)'
 
@@ -191,6 +200,8 @@ const bindingRule: ContractRule = ({ environment: env, layout }, { same }) => {
   const bindings: [string, string][] = [
     ['HERMES_HOME', layout.hermesHome],
     ['HERMES_DESKTOP_USER_DATA_DIR', layout.userData],
+    // The per-OS-user rendezvous in which gateways find each other: a candidate must never see the user's real one.
+    ['HERMES_GATEWAY_LOCK_DIR', layout.gatewayLocks],
     ['USERPROFILE', layout.profile],
     ['HOME', layout.profile],
     ['APPDATA', layout.roaming],
@@ -301,6 +312,258 @@ export function contractProblems(contract: LaunchContract, expected: ContractExp
   }
 
   return CONTRACT_RULES.flatMap(rule => rule(contract, check))
+}
+
+// ─── The harness configuration ─────────────────────────────────────────
+
+export interface PackagedConfig {
+  /** The extracted candidate package (HERMES_E2E_CANDIDATE_DIR). */
+  candidateDir: string | undefined
+  /** A Hermes home the harness exported on purpose, which must stay untouched. */
+  decoyHome: string | undefined
+  /** Variable names the harness exported on purpose (decoys) that the launcher must keep out of the candidate. */
+  decoys: string[]
+  /** The commit under test. */
+  expectedCommit: string | undefined
+  /** HERMES_E2E_REQUIRE_PACKAGED=1: a missing package is a failure, never a skip. */
+  requirePackaged: boolean
+  /** Optional sandbox root for the launcher (default: its own, under %LOCALAPPDATA%). */
+  sandboxRoot: string | undefined
+}
+
+export function readPackagedConfig(env: NodeJS.ProcessEnv = process.env): PackagedConfig {
+  return {
+    candidateDir: env.HERMES_E2E_CANDIDATE_DIR || undefined,
+    decoyHome: env.HERMES_E2E_DECOY_HOME || undefined,
+    decoys: (env.HERMES_E2E_DECOY_VARIABLES ?? '')
+      .split(',')
+      .map(name => name.trim())
+      .filter(Boolean),
+    expectedCommit: env.HERMES_E2E_EXPECT_COMMIT || undefined,
+    requirePackaged: env.HERMES_E2E_REQUIRE_PACKAGED === '1',
+    sandboxRoot: env.HERMES_E2E_CANDIDATE_SANDBOX_ROOT || undefined
+  }
+}
+
+// ─── What a start without the launcher is entitled to ──────────────────
+
+/**
+ * The names the candidate's identity owns in the real profile. A direct start (no launcher) may create exactly these
+ * and nothing else Hermes-named: its Electron user data (the identity's directory and the suffixed one the baked
+ * bundle environment asks for), its suffixed home, the launcher's own default sandbox if a launcher run came first,
+ * and the display-name directory Electron itself could derive. The installed app's names are never among them.
+ */
+export function candidateIdentity(commit: string): {
+  appDataNames: string[]
+  displayName: string
+  homeName: string
+  localAppDataNames: string[]
+  userDataName: string
+} {
+  const sha7 = commit.slice(0, 7)
+  const displayName = `Hermes Agent ${sha7}`
+  const userDataName = `HermesBundledCommit${sha7}${DATA_DIR_SUFFIX}`
+  const homeName = `hermes${DATA_DIR_SUFFIX}`
+
+  return {
+    appDataNames: [`HermesBundledCommit${sha7}`, userDataName, displayName],
+    displayName,
+    homeName,
+    localAppDataNames: [homeName, 'HermesClarifyCandidate', displayName],
+    userDataName
+  }
+}
+
+/** Entries matching `pattern` that are not in `allowed` (compared the way the platform compares file names). */
+export function unexpectedEntries(
+  entries: string[],
+  pattern: RegExp,
+  allowed: string[],
+  platform: Platform = process.platform
+): string[] {
+  const fold = (name: string): string => (platform === 'win32' ? name.toLowerCase() : name)
+  const entitled = new Set(allowed.map(fold))
+
+  return entries.filter(name => pattern.test(name) && !entitled.has(fold(name)))
+}
+
+/** Directory entry names, or none when the directory is absent or unreadable. */
+export function listEntries(directory: string | undefined): string[] {
+  try {
+    return directory ? fs.readdirSync(directory) : []
+  } catch {
+    return []
+  }
+}
+
+// ─── The gateway's rendezvous ──────────────────────────────────────────
+
+export interface HostRecord {
+  dir: string
+  file: string
+  home: null | string
+  pid: null | number
+  port: null | number
+  role: null | string
+}
+
+/** Where a candidate gateway's per-OS-user rendezvous may live: the explicit override, else under the sandbox profile. */
+export function lockDirectories(layout: SandboxLayout, platform: Platform = process.platform): string[] {
+  return [layout.gatewayLocks, pathApi(platform).join(layout.profile, '.local', 'state', 'hermes', 'gateway-locks')]
+}
+
+/** The `host-<role>.json` records a gateway published in `directories` (gateway/host_rendezvous.py). */
+export function readHostRecords(directories: string[]): HostRecord[] {
+  return directories.flatMap(dir =>
+    listEntries(dir)
+      .filter(name => /^host-.+\.json$/.test(name))
+      .flatMap((file): HostRecord[] => {
+        try {
+          const parsed = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8').replace(/^\uFEFF/, '')) as Record<
+            string,
+            unknown
+          >
+
+          const integer = (value: unknown): null | number => (Number.isInteger(value) ? (value as number) : null)
+          const text = (value: unknown): null | string => (typeof value === 'string' ? value : null)
+
+          return [
+            {
+              dir,
+              file,
+              home: text(parsed.home),
+              pid: integer(parsed.pid),
+              port: integer(parsed.port),
+              role: text(parsed.role)
+            }
+          ]
+        } catch {
+          return []
+        }
+      })
+  )
+}
+
+/**
+ * Why the started gateway's rendezvous is not provably the sandbox's own: a record naming THIS process must exist
+ * in a lock directory inside the sandbox, and it must name the sandbox's Hermes home.
+ */
+export function rendezvousProblems(
+  records: HostRecord[],
+  layout: SandboxLayout,
+  backendPid: number,
+  platform: Platform = process.platform
+): string[] {
+  const own = records.find(record => record.pid === backendPid)
+
+  if (!own) {
+    const seen = records.map(record => `${record.file}(pid ${record.pid})`).join(', ') || 'none'
+
+    return [
+      `no host record in ${lockDirectories(layout, platform).join(' or ')} names the backend process ${backendPid} (records: ${seen})`
+    ]
+  }
+
+  return failures([
+    [
+      isInside(layout.root, own.dir, platform),
+      `the backend published its rendezvous in ${own.dir}, outside the sandbox ${layout.root}`
+    ],
+    [
+      own.home !== null && samePath(own.home, layout.hermesHome, platform),
+      `the rendezvous record names the home ${own.home}, not ${layout.hermesHome}`
+    ]
+  ])
+}
+
+// ─── Probes of the running app ─────────────────────────────────────────
+
+export interface VersionInfo {
+  commit?: null | string
+  dirty?: boolean
+  hermesHome?: string
+  hermesRoot?: string
+  hermesRuntime?: { type?: string }
+  payload?: string
+  platform?: string
+  source?: string
+  updateMechanism?: string
+}
+
+interface VersionBridge {
+  getVersion: () => Promise<VersionInfo>
+}
+
+/** What the app says it is: the build stamp's commit, payload kind and update owner, and its runtime. */
+export function readVersionInfo(page: Page): Promise<VersionInfo> {
+  return page.evaluate(async (): Promise<VersionInfo> => {
+    const bridge = (window as unknown as { hermesDesktop?: VersionBridge }).hermesDesktop
+
+    if (!bridge) {
+      throw new Error('the desktop version bridge is unavailable')
+    }
+
+    const { commit, dirty, hermesHome, hermesRoot, hermesRuntime, payload, platform, source, updateMechanism } =
+      await bridge.getVersion()
+
+    return { commit, dirty, hermesHome, hermesRoot, hermesRuntime, payload, platform, source, updateMechanism }
+  })
+}
+
+export interface MainFacts {
+  appPath: string
+  argv: string[]
+  env: {
+    HERMES_DATA_DIR_SUFFIX: null | string
+    HERMES_DESKTOP_USER_DATA_DIR: null | string
+    HERMES_HOME: null | string
+  }
+  execPath: string
+  isPackaged: boolean
+  name: string
+  paths: { appData: string; home: string; logs: string; sessionData: string; temp: string; userData: string }
+  version: string
+}
+
+/** Facts only the Electron main process knows: its name, paths, arguments and the environment it resolved from. */
+export function readMainFacts(app: ElectronApplication): Promise<MainFacts> {
+  return app.evaluate(({ app: electron }): MainFacts => ({
+    appPath: electron.getAppPath(),
+    argv: process.argv,
+    env: {
+      HERMES_DATA_DIR_SUFFIX: process.env.HERMES_DATA_DIR_SUFFIX ?? null,
+      HERMES_DESKTOP_USER_DATA_DIR: process.env.HERMES_DESKTOP_USER_DATA_DIR ?? null,
+      HERMES_HOME: process.env.HERMES_HOME ?? null
+    },
+    execPath: process.execPath,
+    isPackaged: electron.isPackaged,
+    name: electron.getName(),
+    paths: {
+      appData: electron.getPath('appData'),
+      home: electron.getPath('home'),
+      logs: electron.getPath('logs'),
+      sessionData: electron.getPath('sessionData'),
+      temp: electron.getPath('temp'),
+      userData: electron.getPath('userData')
+    },
+    version: electron.getVersion()
+  }))
+}
+
+export async function waitForWindowVisible(app: ElectronApplication, page: Page, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+
+  while (Date.now() < deadline) {
+    const visible = await app
+      .evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.isVisible() ?? false)
+      .catch(() => false)
+
+    if (visible) {
+      return
+    }
+
+    await page.waitForTimeout(500)
+  }
 }
 
 // ─── The shipped entry points ──────────────────────────────────────────

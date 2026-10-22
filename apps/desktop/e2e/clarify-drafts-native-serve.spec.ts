@@ -39,6 +39,7 @@ import {
   shot,
   type SocketLink,
   stageMixedDraft,
+  startServeBackend,
   submittedDraftText,
   waitForDraftState,
   waitForFinalSettled,
@@ -48,7 +49,7 @@ import {
   writeObservations
 } from './clarify-drafts-helpers'
 import { type CoreSandbox, createCoreSandbox } from './core/harness'
-import { type RemoteBackend, remoteEnv, startRemoteBackend } from './core/remote-helpers'
+import { type RemoteBackend, remoteEnv } from './core/remote-helpers'
 import {
   buildAppEnv,
   createSandbox,
@@ -83,7 +84,7 @@ test.beforeAll(async () => {
   backendBox = createCoreSandbox('serve-backend')
   writeMockProviderConfig(backendBox.hermesHome, mock.url, undefined, clarifyTimeoutConfig(CLARIFY_TIMEOUT_SECONDS))
   writeEnvFile(backendBox.hermesHome)
-  backend = await startRemoteBackend(backendBox)
+  backend = await startServeBackend(backendBox)
 
   const sandbox = createSandbox('serve-client')
   const { app, page } = await launchDesktop(buildAppEnv(sandbox, remoteEnv(backend)))
@@ -202,8 +203,7 @@ test.describe('clarify drafts (native, remote hermes serve backend)', () => {
     await clearDeviceDrafts(page)
     expect(await deviceDraftEntries(page)).toEqual([])
     await newSession(page)
-    // The sidecar lists the conversation as "Untitled session" (it is the only one), not by its first prompt.
-    await openSession(page, 'Untitled session', `${MIXED_CLARIFY_TRIGGER} serve-first`)
+    await openSession(page, `${MIXED_CLARIFY_TRIGGER} serve-first`)
 
     const settled = settledCards(page).filter({ visible: true })
     await settled.first().waitFor({ state: 'visible', timeout: 60_000 })

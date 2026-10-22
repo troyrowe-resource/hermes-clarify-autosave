@@ -154,6 +154,43 @@ def test_verify_discovers_specs_from_the_directory_when_none_are_named(tmp_path)
     assert any(f"no test from {RESTART}" in problem for problem in json.loads(out.read_text(encoding="utf-8-sig"))["problems"])
 
 
+BATCH = "batch-clarify.spec.ts"
+
+
+def test_an_extra_spec_outside_the_naming_convention_is_proven_by_the_report_alone(tmp_path):
+    directory = _complete_evidence(tmp_path / "native")
+    report = _multi_report([evidence.NATIVE_SPEC, BATCH])
+    code, verdict = _verify(tmp_path, report, directory, "--extra-spec", BATCH)
+    assert (code, verdict["problems"]) == (0, [])
+    assert verdict["specs"] == {evidence.NATIVE_SPEC: 1, BATCH: 1}, "no batch-clarify-*.png is demanded of it"
+
+    missing = _multi_report([evidence.NATIVE_SPEC])
+    code, verdict = _verify(tmp_path, missing, directory, "--extra-spec", BATCH)
+    assert code == 1 and f"no test from {BATCH} in the report" in verdict["problems"]
+
+
+def test_an_extra_spec_that_failed_or_was_retried_fails_the_gate(tmp_path):
+    directory = _complete_evidence(tmp_path / "native")
+    report = _multi_report([evidence.NATIVE_SPEC, BATCH])
+    report["suites"][1]["specs"][0]["tests"][0]["results"] = [{"status": "failed", "retry": 0}, {"status": "passed", "retry": 1}]
+    report["suites"][1]["specs"][0]["tests"][0]["status"] = "flaky"
+    report["stats"] = {"expected": 1, "unexpected": 0, "flaky": 1, "skipped": 0}
+    code, verdict = _verify(tmp_path, report, directory, "--extra-spec", BATCH)
+    joined = " ".join(verdict["problems"])
+    assert code == 1 and f"{BATCH}: test status 'flaky'" in joined and "stats flaky=1" in joined
+
+
+def test_guard_applies_the_fixture_rule_to_extra_specs_and_refuses_an_absent_one(tmp_path, capsys):
+    specs = {evidence.NATIVE_SPEC: "await setupMockBackend()", BATCH: "await setupMockBackend()"}
+    assert _guard(tmp_path, specs, "--extra-spec", BATCH) == 0
+    assert BATCH in capsys.readouterr().out
+    assert _guard(tmp_path, {**specs, BATCH: "await _electron.launch({})"}, "--extra-spec", BATCH) == 1
+    assert f"{BATCH} does not drive the app through the isolated fixture" in capsys.readouterr().err
+    assert _guard(tmp_path, specs, "--extra-spec", "gone.spec.ts") == 1
+    error = capsys.readouterr().err
+    assert "extra spec" in error and "gone.spec.ts does not exist" in error
+
+
 def test_verify_refuses_a_run_that_found_no_native_spec(tmp_path):
     (tmp_path / "e2e").mkdir()
     results = tmp_path / "results.json"

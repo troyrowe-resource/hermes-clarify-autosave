@@ -32,6 +32,7 @@ import { writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts
 import { type MockServerOptions, startMockServer } from '../../../tests-js/scripts/mock-server'
 
 import { resolveElectronBinary } from './electron-binary'
+import { sandboxHomeEnv } from './sandbox-home-env'
 import { installErrorBannerGuard } from './test'
 
 const DESKTOP_ROOT = path.resolve(import.meta.dirname, '..')
@@ -281,6 +282,8 @@ function writeEmptyConfig(hermesHome: string): void {
  *    (we want the dev checkout at REPO_ROOT)
  *  - HERMES_DESKTOP_HERMES_ROOT → REPO_ROOT (dev checkout resolution)
  *  - HERMES_DESKTOP_APP_NAME → unique-ish per test (avoids single-instance lock)
+ *  - HOME (and on Windows USERPROFILE / HOMEDRIVE / HOMEPATH / HERMES_GATEWAY_LOCK_DIR, see `sandboxHomeEnv`)
+ *    → the sandbox is the process's home
  *  - XDG_RUNTIME_DIR → ensure Electron has a writable runtime dir on Linux
  */
 export function buildAppEnv(sandbox: Sandbox, extra: Record<string, string> = {}): Record<string, string> {
@@ -310,6 +313,7 @@ export function buildAppEnv(sandbox: Sandbox, extra: Record<string, string> = {}
     // either, so only local runs ever took that path.
     HERMES_DESKTOP_ISOLATED_BACKEND: '1',
     HOME: sandbox.root,
+    ...sandboxHomeEnv(sandbox.root),
     HERMES_DESKTOP_HERMES_ROOT: REPO_ROOT,
     HERMES_DESKTOP_APP_NAME: `HermesE2E-${Date.now()}`,
     // `app.close()` in teardown must exit even when a spec leaves a turn
@@ -384,9 +388,11 @@ export async function launchDesktop(
 
   // `electron .` loads from the package.json `main` field
   // (dist/electron-main.mjs after build).
-  // Electron creates its default userData dir (%APPDATA%\<app name> on Windows: the real installed
-  // app's data) before any app code runs, so the env var alone cannot keep a test out of it; only the
-  // switch can. The env var stays for the app's own resolution.
+  // The app resolves its own userData from HERMES_DESKTOP_USER_DATA_DIR. The switch is belt and braces: it
+  // keeps anything that asks Electron for the default userData (%APPDATA%\<app name> on Windows: the real
+  // installed app's data) before or around that resolution inside the sandbox too. The default-path creators
+  // the Windows baseline run found were app code (a module-scope call in link-metadata.ts, the override
+  // derivation in main.ts, the product-identity mkdir), not Electron itself.
   const userDataDir = env.HERMES_DESKTOP_USER_DATA_DIR
 
   const app = await _electron.launch({

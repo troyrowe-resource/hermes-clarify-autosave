@@ -8,19 +8,27 @@ import { afterEach, describe, expect, test } from 'vitest'
 import type { NativeProcess } from '../../../tests-js/scripts/desktop-smoke-process'
 
 import {
+  candidateIdentity,
   contractProblems,
   copyBackendLogs,
   countByImage,
   foreignHermesProcesses,
+  type HostRecord,
   isInside,
   type LaunchContract,
+  listEntries,
+  lockDirectories,
   normalizePath,
   parseLaunchContract,
   processesInside,
   readCandidatePackage,
+  readHostRecords,
+  readPackagedConfig,
   redact,
+  rendezvousProblems,
   samePath,
-  sha256File
+  sha256File,
+  unexpectedEntries
 } from './clarify-packaged-fixture'
 
 const COMMIT = 'abcdef0123456789abcdef0123456789abcdef01'
@@ -30,6 +38,7 @@ const ROOT = 'C:\\Users\\runneradmin\\AppData\\Local\\HermesClarifyCandidate'
 
 function contract(): LaunchContract {
   const layout = {
+    gatewayLocks: `${ROOT}\\gateway-locks`,
     hermesHome: `${ROOT}\\user-data\\hermes-home`,
     local: `${ROOT}\\profile\\AppData\\Local`,
     profile: `${ROOT}\\profile`,
@@ -50,6 +59,7 @@ function contract(): LaunchContract {
       HERMES_DESKTOP_ISOLATED_BACKEND: '1',
       HERMES_DESKTOP_SKIP_PROTOCOL_REGISTRATION: '1',
       HERMES_DESKTOP_USER_DATA_DIR: layout.userData,
+      HERMES_GATEWAY_LOCK_DIR: layout.gatewayLocks,
       HERMES_HOME: layout.hermesHome,
       HOME: layout.profile,
       LOCALAPPDATA: layout.local,
@@ -152,6 +162,28 @@ describe('the launch contract', () => {
       (value: LaunchContract) => (value.environment.APPDATA = 'C:\\Users\\runneradmin\\AppData\\Roaming'),
       'APPDATA='
     ],
+    [
+      'the real per-user rendezvous directory',
+      (value: LaunchContract) =>
+        (value.environment.HERMES_GATEWAY_LOCK_DIR = 'C:\\Users\\runneradmin\\.local\\state\\hermes\\gateway-locks'),
+      'HERMES_GATEWAY_LOCK_DIR='
+    ],
+    [
+      'no rendezvous override',
+      (value: LaunchContract) => delete value.environment.HERMES_GATEWAY_LOCK_DIR,
+      'HERMES_GATEWAY_LOCK_DIR=(unset)'
+    ],
+    [
+      'a rendezvous directory outside the sandbox',
+      (value: LaunchContract) => (value.layout.gatewayLocks = 'C:\\locks'),
+      'layout.gatewayLocks'
+    ],
+    [
+      'an XDG state directory',
+      (value: LaunchContract) => (value.environment.XDG_STATE_HOME = 'C:\\state'),
+      'XDG_STATE_HOME'
+    ],
+    ['a Codex home', (value: LaunchContract) => (value.environment.CODEX_HOME = 'C:\\codex'), 'CODEX_HOME'],
     ['a leaked Python path', (value: LaunchContract) => (value.environment.PYTHONPATH = 'D:\\repo'), 'PYTHONPATH'],
     [
       'a leaked credential',
@@ -285,5 +317,163 @@ describe('evidence hygiene', () => {
     expect(copied).toContain('ticket=[redacted]')
     expect(copied).not.toContain('SECRET')
     expect(copied.length).toBeLessThanOrEqual(40)
+  })
+})
+
+describe('the harness configuration and a direct start', () => {
+  test('is read from the environment, and a missing package is only a skip when it is not required', () => {
+    expect(readPackagedConfig({})).toEqual({
+      candidateDir: undefined,
+      decoyHome: undefined,
+      decoys: [],
+      expectedCommit: undefined,
+      requirePackaged: false,
+      sandboxRoot: undefined
+    })
+
+    expect(
+      readPackagedConfig({
+        HERMES_E2E_CANDIDATE_DIR: 'C:\\hsa\\pkg',
+        HERMES_E2E_DECOY_HOME: 'C:\\decoy',
+        HERMES_E2E_DECOY_VARIABLES: ' A, B ,,C',
+        HERMES_E2E_EXPECT_COMMIT: COMMIT,
+        HERMES_E2E_REQUIRE_PACKAGED: '1'
+      })
+    ).toMatchObject({
+      candidateDir: 'C:\\hsa\\pkg',
+      decoyHome: 'C:\\decoy',
+      decoys: ['A', 'B', 'C'],
+      expectedCommit: COMMIT,
+      requirePackaged: true
+    })
+  })
+
+  test('the identity owns its own names in the real profile, never the installed app’s', () => {
+    const identity = candidateIdentity(COMMIT)
+
+    expect(identity.displayName).toBe('Hermes Agent abcdef0')
+    expect(identity.userDataName).toBe('HermesBundledCommitabcdef0-clarify-candidate')
+    expect(identity.homeName).toBe('hermes-clarify-candidate')
+
+    for (const installed of ['Hermes', 'hermes', 'hermes-desktop', 'hermes-updater', '.hermes']) {
+      expect([...identity.appDataNames, ...identity.localAppDataNames]).not.toContain(installed)
+    }
+  })
+
+  test('only Hermes-named entries outside the allowed names are unexpected, and case does not matter on Windows', () => {
+    const identity = candidateIdentity(COMMIT)
+    const pattern = /^hermes/i
+
+    expect(
+      unexpectedEntries(
+        ['Microsoft', 'HermesBundledCommitabcdef0', 'HERMESBUNDLEDCOMMITABCDEF0-CLARIFY-CANDIDATE'],
+        pattern,
+        identity.appDataNames,
+        'win32'
+      )
+    ).toEqual([])
+    expect(unexpectedEntries(['Hermes', 'hermes-desktop', 'Other'], pattern, identity.appDataNames, 'win32')).toEqual([
+      'Hermes',
+      'hermes-desktop'
+    ])
+    expect(unexpectedEntries(['HermesClarifyCandidate'], pattern, identity.appDataNames, 'linux')).toEqual([
+      'HermesClarifyCandidate'
+    ])
+    expect(unexpectedEntries(['.hermes'], /^\.hermes/i, [], 'win32')).toEqual(['.hermes'])
+  })
+})
+
+describe("the started gateway's rendezvous", () => {
+  const layout = contract().layout
+  const made: string[] = []
+
+  const sandbox = (): string => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'packaged-rendezvous-'))
+
+    made.push(directory)
+
+    return directory
+  }
+
+  afterEach(() => {
+    for (const directory of made.splice(0)) {
+      fs.rmSync(directory, { force: true, recursive: true })
+    }
+  })
+
+  const record = (changes: Partial<HostRecord> = {}): HostRecord => ({
+    dir: layout.gatewayLocks,
+    file: 'host-gateway.json',
+    home: layout.hermesHome,
+    pid: 4242,
+    port: 61000,
+    role: 'gateway',
+    ...changes
+  })
+
+  test('lives either under the explicit override or under the sandboxed profile', () => {
+    expect(lockDirectories(layout, 'win32')).toEqual([
+      layout.gatewayLocks,
+      `${layout.profile}\\.local\\state\\hermes\\gateway-locks`
+    ])
+  })
+
+  test('is proven by a record that names this process, inside the sandbox, for the sandbox home', () => {
+    expect(rendezvousProblems([record()], layout, 4242, 'win32')).toEqual([])
+    expect(
+      rendezvousProblems(
+        [record({ dir: `${layout.profile}\\.local\\state\\hermes\\gateway-locks` })],
+        layout,
+        4242,
+        'win32'
+      )
+    ).toEqual([])
+  })
+
+  test.each([
+    ['no record', [] as HostRecord[], 'names the backend process 4242'],
+    ['a record for another process', [record({ pid: 1 })], 'names the backend process 4242'],
+    [
+      'a record outside the sandbox',
+      [record({ dir: 'C:\\Users\\runneradmin\\.local\\state\\hermes\\gateway-locks' })],
+      'outside the sandbox'
+    ],
+    [
+      'a record for another home',
+      [record({ home: 'C:\\Users\\runneradmin\\AppData\\Local\\hermes' })],
+      'not C:\\Users'
+    ],
+    ['a record without a home', [record({ home: null })], 'names the home null']
+  ])('is not proven by %s', (_name, records, needle) => {
+    const problems = rendezvousProblems(records, layout, 4242, 'win32')
+
+    expect(
+      problems.some(problem => problem.includes(needle)),
+      problems.join('\n')
+    ).toBe(true)
+  })
+
+  test('records are read from the host-*.json files a gateway wrote, ignoring everything else', () => {
+    const directory = sandbox()
+
+    fs.writeFileSync(
+      path.join(directory, 'host-gateway.json'),
+      JSON.stringify({ home: 'H', pid: 7, port: 8, role: 'gateway' })
+    )
+    fs.writeFileSync(path.join(directory, 'host-serve.json'), `\uFEFF${JSON.stringify({ pid: '7', role: 3 })}`)
+    fs.writeFileSync(path.join(directory, 'host-bad.json'), '{not json')
+    fs.writeFileSync(path.join(directory, 'host-gateway.lock'), '')
+    fs.writeFileSync(path.join(directory, 'other.json'), '{}')
+
+    const found = readHostRecords([directory, path.join(directory, 'absent')]).sort((a, b) =>
+      a.file.localeCompare(b.file)
+    )
+
+    expect(found).toEqual([
+      { dir: directory, file: 'host-gateway.json', home: 'H', pid: 7, port: 8, role: 'gateway' },
+      { dir: directory, file: 'host-serve.json', home: null, pid: null, port: null, role: null }
+    ])
+    expect(listEntries(path.join(directory, 'absent'))).toEqual([])
+    expect(listEntries(undefined)).toEqual([])
   })
 })

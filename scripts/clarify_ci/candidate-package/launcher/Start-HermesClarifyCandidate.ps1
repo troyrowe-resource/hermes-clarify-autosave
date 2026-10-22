@@ -52,8 +52,9 @@ $commit = [string]$package.Manifest.source.commit
 
 Initialize-Sandbox -Layout $layout -Commit $commit
 $childEnvironment = Get-CandidateEnvironment -Layout $layout -Commit $commit
-# --user-data-dir stops Electron creating its default %APPDATA%\<app name> before any app code runs; it is the
-# same directory HERMES_DESKTOP_USER_DATA_DIR names, which the app's own resolution then uses.
+# Belt and braces: the app applies HERMES_DESKTOP_USER_DATA_DIR before anything asks Electron for its default
+# user data directory (that call creates it), and the switch names the same directory, so neither the app nor
+# Chromium can resolve the default one, whatever either does.
 $arguments = @('--user-data-dir=' + $layout.userData)
 
 if ($EmitEnvironment) {
@@ -93,6 +94,7 @@ Write-Output ('Started Hermes Agent ' + $commit.Substring(0, 7) + ' (process ' +
 Write-Output ('Sandbox: ' + $layout.root)
 Write-Output ('  Hermes home : ' + $layout.hermesHome)
 Write-Output ('  Electron    : ' + $layout.userData)
+Write-Output ('  Gateway lock: ' + $layout.gatewayLocks)
 Write-Output 'This candidate is unsigned and separate from any installed Hermes. Stop it (and the background'
 Write-Output 'gateway it starts) with Stop-HermesClarifyCandidate.cmd; delete the sandbox folder to reset it.'
 if ($Wait) {
