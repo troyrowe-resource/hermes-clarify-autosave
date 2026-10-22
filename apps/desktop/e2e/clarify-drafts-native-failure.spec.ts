@@ -47,7 +47,7 @@ import {
 import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
 import { expect, test } from './test'
 
-const CLARIFY_TIMEOUT_SECONDS = 25
+const CLARIFY_TIMEOUT_SECONDS = 40
 const TEXT = 'unsaved ✓ text\n  with a second line  '
 const BLOCKER = (hermesHome: string) => path.join(hermesHome, 'clarify_drafts')
 

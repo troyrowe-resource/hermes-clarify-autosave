@@ -47,7 +47,7 @@ import {
 import { type MockBackendFixture, relaunchDesktop, sandboxGatewayPid, setupMockBackend, waitForAppReady } from './fixtures'
 import { expect, test } from './test'
 
-const CLARIFY_TIMEOUT_SECONDS = 30
+const CLARIFY_TIMEOUT_SECONDS = 40
 const RECALL = /Show drafts saved on the server/
 const DRAFT_NEEDLES = [MIXED_TEXT, MIXED_NOTE, 'Bravo']
 

@@ -135,45 +135,59 @@ const ISOLATION_FLAGS = [
 const LEAKY_VARIABLE = /^(?:PYTHON|VIRTUAL_ENV|CONDA|NODE_|NPM_|ELECTRON_|VITE_|UV_|PM_|GITHUB_|RUNNER_|ACTIONS_)/i
 const SECRETISH_VARIABLE = /(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)/i
 
-/**
- * Every reason the launch contract is not a fully isolated start of THIS packaged executable. Empty means: each
- * state location the app and its backend use is inside one sandbox, the sandbox is nowhere near a real Hermes
- * location, the switches that stop Electron creating its default user data are present, and nothing the machine
- * or the harness exported (credentials, Python/Node/Hermes overrides, decoy homes) reached the candidate.
- */
-export function contractProblems(contract: LaunchContract, expected: ContractExpectation): string[] {
-  const platform = expected.platform ?? process.platform
-  const problems: string[] = []
-  const { environment: env, layout } = contract
-  const inside = (parent: string, child: string): boolean => isInside(parent, child, platform)
-  const same = (a: string, b: string): boolean => samePath(a, b, platform)
+/** What every rule may consult: the expectation, the platform's path semantics, and the harness's decoys. */
+interface ContractCheck {
+  decoys: Set<string>
+  expected: ContractExpectation
+  inside: (parent: string, child: string) => boolean
+  platform: Platform
+  same: (a: string, b: string) => boolean
+}
 
-  if (contract.commit !== expected.commit) {
-    problems.push(`the launcher names commit ${contract.commit}, expected ${expected.commit}`)
-  }
+/** One facet of "isolated start of this executable": the problems it finds, none when it holds. */
+type ContractRule = (contract: LaunchContract, check: ContractCheck) => string[]
 
-  if (!same(contract.exe, expected.exe)) {
-    problems.push(`the launcher would start ${contract.exe}, not the packaged ${expected.exe}`)
-  }
+/** The messages of the `[holds, message]` pairs that do not hold. */
+const failures = (checks: [boolean, string][]): string[] =>
+  checks.filter(([holds]) => !holds).map(([, message]) => message)
 
-  if (!same(contract.packageRoot, expected.packageRoot) || !inside(expected.packageRoot, contract.exe)) {
-    problems.push(`the launcher's package root ${contract.packageRoot} is not ${expected.packageRoot}`)
-  }
+const LAYOUT_KEYS = ['userData', 'hermesHome', 'profile', 'roaming', 'local', 'temp'] as const
 
-  for (const key of ['userData', 'hermesHome', 'profile', 'roaming', 'local', 'temp'] as const) {
-    if (!inside(layout.root, layout[key])) {
-      problems.push(`layout.${key} (${layout[key]}) is outside the sandbox ${layout.root}`)
-    }
-  }
+const unset = (value: string | undefined): string => value ?? '(unset)'
 
-  if (!same(layout.hermesHome, pathApi(platform).join(layout.userData, 'hermes-home'))) {
-    problems.push(`the Hermes home ${layout.hermesHome} is not <user data>\\hermes-home, which the app derives from it`)
-  }
+/** It is this commit's launcher for this executable. */
+const identityRule: ContractRule = (contract, { expected, inside, same }) =>
+  failures([
+    [contract.commit === expected.commit, `the launcher names commit ${contract.commit}, expected ${expected.commit}`],
+    [same(contract.exe, expected.exe), `the launcher would start ${contract.exe}, not the packaged ${expected.exe}`],
+    [
+      same(contract.packageRoot, expected.packageRoot) && inside(expected.packageRoot, contract.exe),
+      `the launcher's package root ${contract.packageRoot} is not ${expected.packageRoot}`
+    ]
+  ])
 
-  if (!inside(layout.root, contract.workingDirectory)) {
-    problems.push(`the working directory ${contract.workingDirectory} is outside the sandbox`)
-  }
+/** Every state location is one directory inside the one sandbox, and the Hermes home is where the app derives it. */
+const layoutRule: ContractRule = (contract, { inside, platform, same }) => {
+  const { layout } = contract
 
+  return failures([
+    ...LAYOUT_KEYS.map((key): [boolean, string] => [
+      inside(layout.root, layout[key]),
+      `layout.${key} (${layout[key]}) is outside the sandbox ${layout.root}`
+    ]),
+    [
+      same(layout.hermesHome, pathApi(platform).join(layout.userData, 'hermes-home')),
+      `the Hermes home ${layout.hermesHome} is not <user data>\\hermes-home, which the app derives from it`
+    ],
+    [
+      inside(layout.root, contract.workingDirectory),
+      `the working directory ${contract.workingDirectory} is outside the sandbox`
+    ]
+  ])
+}
+
+/** The variables Hermes, Electron and Windows resolve their folders from all name the sandbox. */
+const bindingRule: ContractRule = ({ environment: env, layout }, { same }) => {
   const bindings: [string, string][] = [
     ['HERMES_HOME', layout.hermesHome],
     ['HERMES_DESKTOP_USER_DATA_DIR', layout.userData],
@@ -185,60 +199,108 @@ export function contractProblems(contract: LaunchContract, expected: ContractExp
     ['TMP', layout.temp]
   ]
 
-  for (const [name, wanted] of bindings) {
-    if (!env[name] || !same(env[name], wanted)) {
-      problems.push(`${name}=${env[name] ?? '(unset)'}, expected the sandbox path ${wanted}`)
-    }
-  }
+  return failures(
+    bindings.map(([name, wanted]): [boolean, string] => [
+      Boolean(env[name]) && same(env[name], wanted),
+      `${name}=${unset(env[name])}, expected the sandbox path ${wanted}`
+    ])
+  )
+}
 
-  for (const name of ISOLATION_FLAGS) {
-    if (env[name] !== '1') {
-      problems.push(`${name}=${env[name] ?? '(unset)'}, expected 1`)
-    }
-  }
-
-  if (env.HERMES_DATA_DIR_SUFFIX !== DATA_DIR_SUFFIX) {
-    problems.push(`HERMES_DATA_DIR_SUFFIX=${env.HERMES_DATA_DIR_SUFFIX ?? '(unset)'}, expected ${DATA_DIR_SUFFIX}`)
-  }
-
+/** The isolation switches are on and Electron is told its user data directory (so it never creates its default). */
+const switchRule: ContractRule = ({ arguments: args, environment: env, layout }) => {
   const expectedSwitch = `--user-data-dir=${layout.userData}`
 
-  if (contract.arguments[0] !== expectedSwitch) {
-    problems.push(`the first argument is ${contract.arguments[0] ?? '(none)'}, expected ${expectedSwitch}`)
+  return failures([
+    ...ISOLATION_FLAGS.map((name): [boolean, string] => [env[name] === '1', `${name}=${unset(env[name])}, expected 1`]),
+    [
+      env.HERMES_DATA_DIR_SUFFIX === DATA_DIR_SUFFIX,
+      `HERMES_DATA_DIR_SUFFIX=${unset(env.HERMES_DATA_DIR_SUFFIX)}, expected ${DATA_DIR_SUFFIX}`
+    ],
+    [args[0] === expectedSwitch, `the first argument is ${args[0] ?? '(none)'}, expected ${expectedSwitch}`]
+  ])
+}
+
+/** Why a variable name must not be in the candidate's environment, or null. Decoys are named as such. */
+function leakProblem(name: string, decoys: Set<string>): null | string {
+  const upper = name.toUpperCase()
+
+  const reasons: [boolean, string][] = [
+    [decoys.has(upper), `${name} was exported by the harness as a decoy and reached the candidate`],
+    [
+      upper.startsWith('HERMES_') && !ALLOWED_HERMES_VARIABLES.has(upper),
+      `${name} is a Hermes variable the launcher must not pass on`
+    ],
+    [
+      LEAKY_VARIABLE.test(name) || SECRETISH_VARIABLE.test(name),
+      `${name} is a runtime override or credential-shaped variable the launcher must not pass on`
+    ]
+  ]
+
+  return reasons.find(([leaks]) => leaks)?.[1] ?? null
+}
+
+/** Nothing the machine or the harness exported (credentials, runtime overrides, decoys) reached the candidate. */
+const leakRule: ContractRule = ({ environment: env }, { decoys }) =>
+  Object.keys(env)
+    .map(name => leakProblem(name, decoys))
+    .filter((problem): problem is string => problem !== null)
+
+/** What Windows programs and Python sockets need was kept. */
+const windowsBasicsRule: ContractRule = ({ environment: env }) => {
+  const names = new Set(Object.keys(env).map(name => name.toUpperCase()))
+
+  return failures(
+    ['SYSTEMROOT', 'PATH'].map((needed): [boolean, string] => [
+      names.has(needed),
+      `${needed} is missing: Windows programs and Python sockets need it`
+    ])
+  )
+}
+
+/** The sandbox is nowhere near a real Hermes location, and no real location is handed to the candidate. */
+const realLocationRule: ContractRule = ({ environment: env, layout, refusedLocations }, { inside, same }) =>
+  refusedLocations.flatMap(real =>
+    failures([
+      [
+        !inside(real, layout.root) && !inside(layout.root, real),
+        `the sandbox ${layout.root} overlaps the real location ${real}`
+      ],
+      [
+        !Object.values(env).some(value => same(value, real)),
+        `the real location ${real} is in the candidate's environment`
+      ]
+    ])
+  )
+
+const CONTRACT_RULES: ContractRule[] = [
+  identityRule,
+  layoutRule,
+  bindingRule,
+  switchRule,
+  leakRule,
+  windowsBasicsRule,
+  realLocationRule
+]
+
+/**
+ * Every reason the launch contract is not a fully isolated start of THIS packaged executable. Empty means: each
+ * state location the app and its backend use is inside one sandbox, the sandbox is nowhere near a real Hermes
+ * location, the switches that stop Electron creating its default user data are present, and nothing the machine
+ * or the harness exported (credentials, Python/Node/Hermes overrides, decoy homes) reached the candidate.
+ */
+export function contractProblems(contract: LaunchContract, expected: ContractExpectation): string[] {
+  const platform = expected.platform ?? process.platform
+
+  const check: ContractCheck = {
+    decoys: new Set((expected.decoys ?? []).map(name => name.toUpperCase())),
+    expected,
+    inside: (parent, child) => isInside(parent, child, platform),
+    platform,
+    same: (a, b) => samePath(a, b, platform)
   }
 
-  const names = Object.keys(env)
-  const decoys = new Set((expected.decoys ?? []).map(name => name.toUpperCase()))
-
-  for (const name of names) {
-    const upper = name.toUpperCase()
-
-    if (decoys.has(upper)) {
-      problems.push(`${name} was exported by the harness as a decoy and reached the candidate`)
-    } else if (upper.startsWith('HERMES_') && !ALLOWED_HERMES_VARIABLES.has(upper)) {
-      problems.push(`${name} is a Hermes variable the launcher must not pass on`)
-    } else if (LEAKY_VARIABLE.test(name) || SECRETISH_VARIABLE.test(name)) {
-      problems.push(`${name} is a runtime override or credential-shaped variable the launcher must not pass on`)
-    }
-  }
-
-  for (const needed of ['SYSTEMROOT', 'PATH']) {
-    if (!names.some(name => name.toUpperCase() === needed)) {
-      problems.push(`${needed} is missing: Windows programs and Python sockets need it`)
-    }
-  }
-
-  for (const real of contract.refusedLocations) {
-    if (inside(real, layout.root) || inside(layout.root, real)) {
-      problems.push(`the sandbox ${layout.root} overlaps the real location ${real}`)
-    }
-
-    if (Object.values(env).some(value => same(value, real))) {
-      problems.push(`the real location ${real} is in the candidate's environment`)
-    }
-  }
-
-  return problems
+  return CONTRACT_RULES.flatMap(rule => rule(contract, check))
 }
 
 // ─── The shipped entry points ──────────────────────────────────────────

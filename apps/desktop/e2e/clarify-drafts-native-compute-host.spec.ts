@@ -283,7 +283,8 @@ test.describe('clarify drafts (native, remote hermes serve backend with turn iso
     await clearDeviceDrafts(page)
     expect(await deviceDraftEntries(page)).toEqual([])
     await newSession(page)
-    await openSession(page, `${MIXED_CLARIFY_TRIGGER} compute-host-first`)
+    // A `hermes serve` backend lists the conversation as "Untitled session"; the thread still shows its prompt.
+    await openSession(page, 'Untitled session', `${MIXED_CLARIFY_TRIGGER} compute-host-first`)
 
     const settled = settledCards(page).filter({ visible: true })
     await settled.first().waitFor({ state: 'visible', timeout: 60_000 })

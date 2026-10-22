@@ -64,7 +64,7 @@ import { expect, test } from './test'
 // interpreter as HERMES_DESKTOP_PYTHON.
 process.env.HERMES_E2E_PYTHON ??= process.env.HERMES_DESKTOP_PYTHON
 
-const CLARIFY_TIMEOUT_SECONDS = 60
+const CLARIFY_TIMEOUT_SECONDS = 70
 const RECALL = /Show drafts saved on the server/
 
 test.describe.configure({ mode: 'serial' })

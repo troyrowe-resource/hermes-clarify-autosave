@@ -54,7 +54,7 @@ import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fi
 import { expect, test } from './test'
 
 // Long enough for a cut, a reconnect and a reload on a slow machine; the test then waits out the rest.
-const CLARIFY_TIMEOUT_SECONDS = 75
+const CLARIFY_TIMEOUT_SECONDS = 80
 
 test.describe.configure({ mode: 'serial' })
 

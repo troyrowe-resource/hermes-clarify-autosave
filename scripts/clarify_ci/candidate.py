@@ -250,7 +250,7 @@ def _audit_payload(resources: Path, commit: str, problems: list[str]) -> dict:
             problems.append(f"payload source lacks {relative}")
     prompt = repo / "tui_gateway" / "methods_prompt.py"
     if prompt.is_file():
-        text = prompt.read_text(encoding="utf-8", errors="replace")
+        text = prompt.read_text(encoding="utf-8-sig", errors="replace")
         problems += [f"payload source does not register {rpc}" for rpc in CLARIFY_RPCS if rpc not in text]
     inner = repo / "install-stamp.json"
     outer = resources / "install-stamp.json"

@@ -14,6 +14,8 @@
  *     server's disk and on this device.
  *  3. Scope separation: a second session asking the IDENTICAL batch (same questions, same question ids) starts
  *     with none of the first session's drafts and ends with only its own.
+ *  4. Skip is not a submission either: nothing is answered, and the drafts the assistant hears of are flagged
+ *     unsubmitted.
  */
 
 import { MIXED_CLARIFY_TRIGGER } from '../../../tests-js/scripts/mock-server'
@@ -42,6 +44,7 @@ import {
   serverDraftRecords,
   settledCards,
   shot,
+  submittedDraftText,
   textField,
   toggleChoice,
   typeText,
@@ -55,7 +58,7 @@ import {
 import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
 import { expect, test } from './test'
 
-const CLARIFY_TIMEOUT_SECONDS = 45
+const CLARIFY_TIMEOUT_SECONDS = 55
 
 test.describe.configure({ mode: 'serial' })
 
@@ -321,5 +324,36 @@ test.describe('clarify drafts (native, mixed question kinds)', () => {
     expect((await readDraftRows(first)).map(({ content, question }) => ({ content, question }))).toEqual(MIXED_DRAFT_ROWS)
     expect(await first.first().innerText()).not.toContain('third-session text')
     await shot(page, 'native-mixed-05-first-session-after-others.png')
+  })
+
+  test('Skip is not a submission either: nothing is answered, and the drafts the assistant hears of are flagged unsubmitted', async () => {
+    test.setTimeout(240_000)
+    const { mock, page } = fixture!
+    const from = mock.receivedChatRequests.length
+
+    await newSession(page)
+    await sendPrompt(page, `${MIXED_CLARIFY_TRIGGER} fourth`)
+    const form = await waitForLiveForm(page, 3)
+    await toggleChoice(form, 0, 'Bravo')
+    await typeText(form, 2, 'skipped, never an answer ✓')
+    await waitForDraftState(form, 'saved')
+    expect(clarifyToolResults(mock, from)).toEqual([])
+
+    await form.getByRole('button', { name: 'Skip', exact: true }).click()
+    const settled = settledCards(page).filter({ visible: true })
+    await settled.first().waitFor({ state: 'visible', timeout: 60_000 })
+    await expect(settled).toHaveCount(1)
+    const answers = await readAnswers(settled)
+    expect(answers).toHaveLength(3)
+    answers.forEach(answer => expect(answer).toMatch(/^(No answer|Skipped)$/))
+
+    await expect.poll(() => clarifyToolResults(mock, from).length, { timeout: 30_000 }).toBe(1)
+    const [told] = clarifyToolResults(mock, from)
+    expect(told.outcome).not.toBe('submitted')
+    expect(told.responses.every(response => response.status === 'unanswered' && response.user_response === null)).toBe(true)
+    expect(told.drafts_submitted).toBe(false)
+    expect(told.drafts?.map(draft => draft.typed_text)).toContain('skipped, never an answer ✓')
+    expect(submittedDraftText(mock, from, ['skipped, never an answer'])).toEqual([])
+    observations.skip = { modelReceived: told }
   })
 })

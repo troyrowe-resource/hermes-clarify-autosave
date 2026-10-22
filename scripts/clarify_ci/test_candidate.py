@@ -218,7 +218,7 @@ def test_assemble_builds_a_zip_whose_manifest_digests_and_prerequisites_describe
     assert COMMIT in readme and "@COMMIT@" not in readme and "actions/runs/42" in readme
     assert "@" not in readme.replace("@@", ""), "every placeholder is replaced"
     assert f"app\\{EXE} directly" in readme
-    sums = (out / "SHA256SUMS.txt").read_text(encoding="utf-8").splitlines()
+    sums = (out / "SHA256SUMS.txt").read_text(encoding="utf-8-sig").splitlines()
     assert sums[0] == f"{manifest['archive']['sha256']}  {archive.name}"
     assert sums[1].endswith("  MANIFEST.json") and sums[1].split()[0] == candidate._sha256(out / "MANIFEST.json")
 
@@ -367,7 +367,7 @@ def test_cli_verdict_and_bundle_env(tmp_path, capsys):
     args = ["verdict", "--manifest", str(paths["manifest"]), "--archive-verify", str(paths["archive"]),
             "--evidence-verdict", str(paths["evidence"]), "--out", str(out)]
     assert candidate.main(args + ["--outcome", "packaged-e2e=success"]) == 0
-    assert json.loads(out.read_text(encoding="utf-8"))["passed"] is True
+    assert json.loads(out.read_text(encoding="utf-8-sig"))["passed"] is True
     assert candidate.main(args + ["--outcome", "packaged-e2e=failure"]) == 1
     assert "packaged-e2e was failure" in capsys.readouterr().err
     assert candidate.main(["bundle-env"]) == 0
@@ -384,7 +384,7 @@ def test_outputs_publish_what_later_jobs_need_with_lf_endings(tmp_path, monkeypa
     expected = [f"package={manifest['package']}", f"zip_name={manifest['archive']['name']}",
                 f"zip_sha256={manifest['archive']['sha256']}", f"exe_sha256={manifest['app']['exe_sha256']}",
                 "artifact=clarify-candidate-42-3"]
-    assert github_output.read_bytes() == ("\n".join(expected) + "\n").encode("utf-8")
+    assert github_output.read_bytes() == ("\n".join(expected) + "\n").encode()
     assert capsys.readouterr().out.splitlines() == expected
 
 
@@ -394,7 +394,7 @@ def test_locate_writes_the_unpacked_directory_to_the_step_outputs(tmp_path, monk
     github_output = tmp_path / "github-output"
     monkeypatch.setenv("GITHUB_OUTPUT", str(github_output))
     assert candidate.main(["locate", "--release-dir", str(release), "--commit", COMMIT, "--github-output"]) == 0
-    assert github_output.read_bytes() == f"unpacked={app.as_posix()}\n".encode("utf-8")
+    assert github_output.read_bytes() == f"unpacked={app.as_posix()}\n".encode()
 
 
 def test_cli_audit_assemble_and_verify_round_trip(tmp_path, monkeypatch, capsys):
@@ -402,14 +402,14 @@ def test_cli_audit_assemble_and_verify_round_trip(tmp_path, monkeypatch, capsys)
     monkeypatch.setenv("GITHUB_RUN_ID", "7")
     audit = tmp_path / "audit.json"
     assert candidate.main(["audit", "--app", str(app), "--commit", COMMIT, "--out", str(audit)]) == 0
-    assert json.loads(audit.read_text(encoding="utf-8"))["verdict"] == "passed"
+    assert json.loads(audit.read_text(encoding="utf-8-sig"))["verdict"] == "passed"
     assert candidate.main(["assemble", "--app", str(app), "--commit", COMMIT, "--template", str(TEMPLATE),
                            "--out-dir", str(tmp_path / "out"), "--provenance", str(tmp_path / "none.json")]) == 0
     archive = next((tmp_path / "out").glob("*.zip"))
     verdict = tmp_path / "verdict.json"
     assert candidate.main(["verify", "--zip", str(archive), "--manifest", str(tmp_path / "out" / "MANIFEST.json"),
                            "--extract-to", str(tmp_path / "x"), "--commit", COMMIT, "--out", str(verdict)]) == 0
-    assert json.loads(verdict.read_text(encoding="utf-8"))["verdict"] == "passed"
+    assert json.loads(verdict.read_text(encoding="utf-8-sig"))["verdict"] == "passed"
     assert candidate.main(["audit", "--app", str(_fake_app(tmp_path / "bad", source="git")), "--commit", COMMIT,
                            "--out", str(audit)]) == 1
     assert "source='git'" in capsys.readouterr().err
@@ -421,7 +421,7 @@ def test_the_shipped_template_has_every_file_the_manifest_and_readme_promise():
     assert shipped == ["README-CANDIDATE.txt", "Start-HermesClarifyCandidate.cmd", "Stop-HermesClarifyCandidate.cmd",
                        "launcher/CandidateCommon.ps1", "launcher/Start-HermesClarifyCandidate.ps1",
                        "launcher/Stop-HermesClarifyCandidate.ps1"]
-    readme = (TEMPLATE / "README-CANDIDATE.txt").read_text(encoding="utf-8")
+    readme = (TEMPLATE / "README-CANDIDATE.txt").read_text(encoding="utf-8-sig")
     for placeholder in ("@COMMIT@", "@SHA7@", "@EXE@", "@EXE_NAME@", "@RUN_URL@"):
         assert placeholder in readme
     assert "Start-HermesClarifyCandidate.cmd" in readme and "Stop-HermesClarifyCandidate.cmd" in readme
