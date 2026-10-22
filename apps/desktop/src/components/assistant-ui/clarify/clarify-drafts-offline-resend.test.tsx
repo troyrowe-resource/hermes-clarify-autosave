@@ -47,7 +47,13 @@ const tree = (ui: ReactNode) => (
   </I18nProvider>
 )
 
-const state = () => document.querySelector('[data-clarify-draft-state]')?.getAttribute('data-clarify-draft-state')
+let card: HTMLElement
+
+const mount = () => {
+  card = render(tree(<ClarifyTool {...props()} />)).container
+}
+
+const state = () => card.querySelector('[data-clarify-draft-state]')?.getAttribute('data-clarify-draft-state')
 const field = () => screen.getByPlaceholderText('Type your answer…')
 
 const delivery = (receivedAt: number, drafts?: ClarifyRequest['drafts']): ClarifyRequest => ({
@@ -120,7 +126,7 @@ describe('clarify drafts typed while the connection was down', () => {
   it('are sent again when the owner re-delivers the request with its older copy, though the card never remounted', async () => {
     const { link, refused, saves } = gateway()
     setClarifyRequest(delivery(1))
-    render(tree(<ClarifyTool {...props()} />))
+    mount()
 
     fireEvent.change(field(), { target: { value: 'typed while online' } })
     await waitFor(() => expect(state()).toBe('saved'), { timeout: 4000 })
@@ -146,7 +152,7 @@ describe('clarify drafts typed while the connection was down', () => {
     const { link, refused, saves } = gateway()
     link.up = false
     setClarifyRequest(delivery(1))
-    render(tree(<ClarifyTool {...props()} />))
+    mount()
 
     fireEvent.change(field(), { target: { value: 'first typed offline' } })
     await waitFor(() => expect(refused).toHaveLength(1), { timeout: 4000 })
@@ -163,7 +169,7 @@ describe('clarify drafts typed while the connection was down', () => {
   it('are not sent again when the replay shows the server already holds that exact revision', async () => {
     const { saves } = gateway()
     setClarifyRequest(delivery(1))
-    render(tree(<ClarifyTool {...props()} />))
+    mount()
 
     fireEvent.change(field(), { target: { value: 'already saved' } })
     await waitFor(() => expect(state()).toBe('saved'), { timeout: 4000 })

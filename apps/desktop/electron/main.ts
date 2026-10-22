@@ -94,7 +94,7 @@ import { recycleOwnedBackend } from './backend-recycle'
 import { isPidAliveWindows, waitForBackendRelease } from './backend-release-gate'
 import { createInstalledRuntimeGate } from './backend-resolution'
 import { createBackendServeSupportResolver } from './backend-serve-support'
-import { desktopBackendSpawnEnv } from './backend-spawn-env'
+import { commitBuildScopedResolver, desktopBackendSpawnEnv } from './backend-spawn-env'
 import {
   isHostKeyChangedBootFailure,
   isRetryableRemoteBootFailure,
@@ -4995,7 +4995,9 @@ function writeDefaultProjectDir(dir) {
 
 const installedRuntimeGate = createInstalledRuntimeGate(process.env, rememberLog)
 
-async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHermesBackend> {
+const resolveHermesBackend = commitBuildScopedResolver(resolveHermesBackendRuntime, { source: INSTALL_STAMP?.source, hermesHome: HERMES_HOME })
+
+async function resolveHermesBackendRuntime(backendArgs: string[]): Promise<ResolvedHermesBackend> {
   const payload = bundledPayload(process.resourcesPath)
 
   if (payload) {

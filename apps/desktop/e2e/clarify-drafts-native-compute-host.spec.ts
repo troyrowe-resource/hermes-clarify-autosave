@@ -46,6 +46,7 @@ import {
   shot,
   type SocketLink,
   stageMixedDraft,
+  startServeBackend,
   submittedDraftText,
   waitForDraftState,
   waitForFinalSettled,
@@ -55,7 +56,7 @@ import {
   writeObservations
 } from './clarify-drafts-helpers'
 import { type CoreSandbox, createCoreSandbox } from './core/harness'
-import { type RemoteBackend, remoteEnv, startRemoteBackend } from './core/remote-helpers'
+import { type RemoteBackend, remoteEnv } from './core/remote-helpers'
 import {
   buildAppEnv,
   createSandbox,
@@ -153,7 +154,8 @@ test.beforeAll(async () => {
     `${clarifyTimeoutConfig(CLARIFY_TIMEOUT_SECONDS)}${TURN_ISOLATION_CONFIG}`
   )
   writeEnvFile(backendBox.hermesHome)
-  backend = await startRemoteBackend(backendBox)
+  // Sandboxed home, state and host lock dir: a local run never meets the user's own backend rendezvous.
+  backend = await startServeBackend(backendBox)
 
   const sandbox = createSandbox('compute-host-client')
   const { app, page } = await launchDesktop(buildAppEnv(sandbox, remoteEnv(backend)))
