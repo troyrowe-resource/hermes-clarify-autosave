@@ -46,12 +46,12 @@ Do not start app\@EXE_NAME@ directly. A direct start is contained, not
 isolated. The build keeps to its own data folders (Electron user data
 %APPDATA%\HermesBundledCommit@SHA7@-clarify-candidate, next to an
 empty %APPDATA%\HermesBundledCommit@SHA7@; Hermes home
-%LOCALAPPDATA%\hermes-clarify-candidate), cannot update itself, never reads an
-exported or saved HERMES_HOME and never registers the hermes:// link handler.
-But those folders are in your real profile instead of the sandbox, its
-background gateway publishes its record for other gateways under
-%USERPROFILE%\.local\state\hermes, and the assistant's default working
-folder is your user profile folder. Only the launcher moves all three.
+%LOCALAPPDATA%\hermes-clarify-candidate, which also holds its gateway's lock
+and record folder), cannot update itself, never reads an exported or saved
+HERMES_HOME and never registers the hermes:// link handler. But those folders
+are in your real profile instead of the sandbox, the programs it starts see
+your real user profile, and the assistant's default working folder is your user
+profile folder. Only the launcher gives it a profile of its own.
 
 STOP
 ----

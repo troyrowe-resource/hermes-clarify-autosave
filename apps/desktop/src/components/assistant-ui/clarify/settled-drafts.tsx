@@ -14,6 +14,7 @@ import {
   clarifyDraftCardKey,
   clarifyDraftDeviceStored,
   type ClarifyDraftDiscardState,
+  clarifyDraftMemoLive,
   clarifyDraftOwnerKey,
   type ClarifyDraftRecallState,
   type ClarifyDraftScope,
@@ -121,7 +122,7 @@ function useClarifyDraftRecall(
   const recallUnavailable = useStore($clarifyDraftRecallUnavailable)
   const recalls = useStore($clarifyDraftCardRecalls)
   const recall = (cardKey && recalls[cardKey]) || IDLE
-  const ownerUnavailable = Boolean(scope && recallUnavailable[clarifyDraftOwnerKey(scope)])
+  const ownerUnavailable = Boolean(scope && clarifyDraftMemoLive(recallUnavailable[clarifyDraftOwnerKey(scope)]))
   const exactRecord = recall.status === 'ok' && exactRequestId ? (recall.records[0] ?? null) : null
 
   const recallNow = () => {

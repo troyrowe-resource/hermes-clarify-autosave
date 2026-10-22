@@ -3,6 +3,7 @@ import { atom, type WritableAtom } from 'nanostores'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 
 import { bareChoice, type ClarifyQuestion, type ClarifyRequest } from './clarify'
+import { REFUSAL_TTL_MS } from './clarify-batch'
 import { $gateway, activeGatewayConnectionId, activeGatewayProfileKey } from './gateway'
 import { normalizeProfileKey } from './profile'
 import { ambientGatewayOwnsEverySession } from './session-owner-resolution'
@@ -108,10 +109,19 @@ const memory = new Map<string, StoredClarifyDrafts>()
 const timers = new Map<string, ReturnType<typeof setTimeout>>()
 /** Storage keys finished for good (submitted, or the session deleted): nothing is stored or sent again. */
 const closedRequests = new Set<string>()
-/** Storage keys the SERVER closed (request ended, or its copy discarded): this device keeps saving, nothing is sent. */
-const serverClosed = new Set<string>()
-/** Owner gateways (`gateway\0profile`) that answered -32601: an older backend without `clarify.draft`. */
-const unsupportedOwners = new Set<string>()
+/** Storage keys whose server copy was DISCARDED: final, this device keeps saving and nothing is sent again. */
+const serverDiscarded = new Set<string>()
+/**
+ * Storage keys the server answered `expired` for (the request ended, or this viewer is not attached to its session,
+ * which is all a reconnect's first moments look like): nothing is sent until the owner delivers the open request
+ * again ({@link reopenClarifyDraftSaving}). This device keeps saving meanwhile.
+ */
+const serverExpired = new Set<string>()
+/**
+ * Owner gateways (`gateway\0profile`) that answered -32601 (an older backend without `clarify.draft`), and until when:
+ * a runtime upgrade restarts the owner under the same route, so this lapses like the `clarify_batch` refusal does.
+ */
+const unsupportedOwners = new Map<string, number>()
 /** Per storage key, questions whose answer the server LOCKED: their drafts are superseded for good. */
 const lockedQuestions = new Map<string, Set<string>>()
 /** Storage keys whose newest edit this device's storage refused (quota, disabled storage). */
@@ -124,6 +134,9 @@ export const clarifyDraftKey = (scope: ClarifyDraftScope, requestId: string): st
   `${KEY_PREFIX}${[scope.gateway, scope.profile, scope.session, requestId].map(enc).join('/')}`
 
 const ownerKey = (scope: ClarifyDraftScope) => `${scope.gateway}\u0000${scope.profile}`
+
+/** Whether a remembered "this backend lacks the RPC" (`until`: when it lapses) is still in force. */
+export const clarifyDraftMemoLive = (until: number | undefined, now = Date.now()): boolean => (until ?? 0) > now
 
 const sameScope = (a: ClarifyDraftScope | null, b: ClarifyDraftScope | null): boolean =>
   Boolean(a && b && a.gateway === b.gateway && a.profile === b.profile && a.session === b.session)
@@ -473,6 +486,17 @@ export const resendClarifyDraft = (
   }
 }
 
+/**
+ * The owner delivered this open request again (a reconnect's replay): it is open and this viewer is attached to it,
+ * which is exactly what an `expired` reply could not say. Server saving resumes for it. A discarded copy stays
+ * discarded.
+ */
+export function reopenClarifyDraftSaving(scope: ClarifyDraftScope | null, requestId: string): void {
+  if (scope) {
+    serverExpired.delete(clarifyDraftKey(scope, requestId))
+  }
+}
+
 function scheduleServerSave(target: DraftTarget, qid: string): void {
   const key = `${clarifyDraftKey(target.scope, target.request.requestId)}\u0000${qid}`
   const pending = timers.get(key)
@@ -505,11 +529,11 @@ async function sendDraft(target: DraftTarget, qid: string, gateway: ReturnType<t
   const key = clarifyDraftKey(scope, request.requestId)
   const draft = readEntry(scope, request.requestId)?.drafts[qid]
 
-  if (!draft || closedRequests.has(key) || serverClosed.has(key)) {
+  if (!draft || closedRequests.has(key) || serverDiscarded.has(key) || serverExpired.has(key)) {
     return
   }
 
-  if (unsupportedOwners.has(ownerKey(scope))) {
+  if (clarifyDraftMemoLive(unsupportedOwners.get(ownerKey(scope)))) {
     setServerState(scope, request.requestId, 'unavailable')
 
     return
@@ -555,18 +579,19 @@ async function sendDraft(target: DraftTarget, qid: string, gateway: ReturnType<t
       setServerState(scope, request.requestId, 'saved')
     } else if (reply?.status === 'discarded') {
       // The server copy was explicitly discarded: final, never re-saved there. This device's copy stays.
-      serverClosed.add(key)
+      serverDiscarded.add(key)
       setServerState(scope, request.requestId, 'device-only')
     } else if (reply?.status === 'expired') {
-      // The request ended (or is not this session's): the device copy is all there is.
-      serverClosed.add(key)
+      // The request ended, or this viewer is not attached to its session (yet): the device copy is all there is,
+      // until the owner delivers the open request again.
+      serverExpired.add(key)
       setServerState(scope, request.requestId, 'device-only')
     }
     // `locked`: the answer already won on the server; nothing to save.
   } catch (error) {
     if (isMissingRpcMethod(error)) {
-      // An older backend: keep the device copy, say so, never retry against it.
-      unsupportedOwners.add(ownerKey(scope))
+      // An older backend: keep the device copy, say so, and do not ask it again until the memory lapses.
+      unsupportedOwners.set(ownerKey(scope), Date.now() + REFUSAL_TTL_MS)
       setServerState(scope, request.requestId, 'unavailable')
 
       return
@@ -704,7 +729,10 @@ export async function discardClarifyDrafts(
     return { device, server: 'unreachable' }
   }
 
-  if (unsupportedOwners.has(ownerKey(scope)) || $clarifyDraftRecallUnavailable.get()[ownerKey(scope)]) {
+  if (
+    clarifyDraftMemoLive(unsupportedOwners.get(ownerKey(scope))) ||
+    clarifyDraftMemoLive($clarifyDraftRecallUnavailable.get()[ownerKey(scope)])
+  ) {
     return { device, server: 'unsupported' }
   }
 
@@ -739,8 +767,11 @@ export type ClarifyDraftRecall =
   | { status: 'unavailable' }
   | { status: 'unscoped' }
 
-/** Owner gateways (`gateway\0profile`) whose backend has no `clarify.drafts`: recall is not offered again. */
-export const $clarifyDraftRecallUnavailable = atom<Record<string, true>>({})
+/**
+ * Owner gateways (`gateway\0profile`) whose backend has no `clarify.drafts`, and until when: recall is not offered
+ * again until it lapses ({@link clarifyDraftMemoLive}), because an upgraded backend answers under the same route.
+ */
+export const $clarifyDraftRecallUnavailable = atom<Record<string, number>>({})
 
 export const clarifyDraftOwnerKey = (scope: ClarifyDraftScope): string => ownerKey(scope)
 
@@ -791,7 +822,7 @@ function parseRecord(raw: unknown): null | ServerClarifyDraftRecord {
  * Read the backend's durable drafts for THIS owned session (the runtime id the
  * backend attached), exactly one request's when `requestId` is given. A read
  * only: nothing is locked, sent or restored into a form. An older backend
- * (-32601) is remembered per owner and never asked again.
+ * (-32601) is remembered per owner and not asked again until the memory lapses.
  */
 export async function recallServerClarifyDrafts(
   scope: ClarifyDraftScope | null,
@@ -804,7 +835,7 @@ export async function recallServerClarifyDrafts(
     return { status: 'unscoped' }
   }
 
-  if ($clarifyDraftRecallUnavailable.get()[ownerKey(scope)]) {
+  if (clarifyDraftMemoLive($clarifyDraftRecallUnavailable.get()[ownerKey(scope)])) {
     return { status: 'unavailable' }
   }
 
@@ -825,7 +856,10 @@ export async function recallServerClarifyDrafts(
     return { records, status: 'ok' }
   } catch (error) {
     if (isMissingRpcMethod(error)) {
-      $clarifyDraftRecallUnavailable.set({ ...$clarifyDraftRecallUnavailable.get(), [ownerKey(scope)]: true })
+      $clarifyDraftRecallUnavailable.set({
+        ...$clarifyDraftRecallUnavailable.get(),
+        [ownerKey(scope)]: Date.now() + REFUSAL_TTL_MS
+      })
 
       return { status: 'unavailable' }
     }
@@ -1009,7 +1043,8 @@ export function resetClarifyDraftsForTests(): void {
   lockedQuestions.clear()
   deviceFailed.clear()
   closedRequests.clear()
-  serverClosed.clear()
+  serverDiscarded.clear()
+  serverExpired.clear()
   unsupportedOwners.clear()
   $clarifyDraftServerState.set({})
   $clarifyDraftStatus.set({})

@@ -15,6 +15,7 @@ import {
   isBlankDraft,
   readClarifyDrafts,
   recordClarifyDraft,
+  reopenClarifyDraftSaving,
   resendClarifyDraft,
   resolveClarifyDraftScope
 } from '@/store/clarify-drafts'
@@ -72,16 +73,22 @@ export function useClarifyDraftAutosave({
     const local = readClarifyDrafts(draftScope, request.requestId)?.drafts ?? {}
     const remote = request.drafts ?? {}
 
+    // The owner delivering the request is the proof it is open and this viewer is attached to it: an `expired`
+    // reply that came before the session was attached again no longer stands.
+    reopenClarifyDraftSaving(draftScope, request.requestId)
+
     // Keystrokes the server never acknowledged (typed offline, or lost in the save pause) go out again each time
     // the request is delivered. A reconnect usually leaves the card mounted, so this cannot wait for a remount.
+    // A CLEARED draft goes too when the server still holds the older text: otherwise it keeps, and at a timeout
+    // reports to the assistant, words the user deleted.
     for (const question of liveQuestions) {
       const mine = local[question.qid]
 
       if (
         mine &&
-        !isBlankDraft(mine) &&
         request.lockedAnswers?.[question.qid] === undefined &&
-        (remote[question.qid]?.revision ?? 0) < mine.revision
+        (remote[question.qid]?.revision ?? 0) < mine.revision &&
+        (!isBlankDraft(mine) || !isBlankDraft(remote[question.qid]))
       ) {
         resendClarifyDraft(draftScope, request, question.qid, storedSessionId)
       }
