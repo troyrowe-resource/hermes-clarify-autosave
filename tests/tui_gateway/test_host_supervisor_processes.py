@@ -42,6 +42,27 @@ def _gone(pid: int) -> bool:
         return True
 
 
+def _describe(proc: psutil.Process) -> str:
+    try:
+        return f"{proc.name()} ppid={proc.ppid()} {' '.join(proc.cmdline())[:160]}"
+    except psutil.Error as exc:
+        return repr(exc)
+
+
+def _tree(pid: int) -> dict[int, str]:
+    """``pid`` and its descendants, taken while alive: a venv launcher's host is its child."""
+    root = psutil.Process(pid)
+    return {proc.pid: _describe(proc) for proc in (root, *root.children(recursive=True))}
+
+
+def _wait_all_gone(tree: dict[int, str], timeout: float = 10.0) -> None:
+    try:
+        wait_until(lambda: all(map(_gone, tree)), timeout=timeout)
+    except AssertionError:
+        survivors = {pid: desc for pid, desc in tree.items() if not _gone(pid)}
+        raise AssertionError(f"still running after {timeout}s: {survivors}") from None
+
+
 @pytest.mark.platforms("any")
 @pytest.mark.parametrize("bom", ["", "﻿"], ids=["plain", "bom"])
 def test_next_supervisor_stops_the_registered_orphan_host(tmp_path, bom):
@@ -50,12 +71,13 @@ def test_next_supervisor_stops_the_registered_orphan_host(tmp_path, bom):
     first = _supervisor(tmp_path)
     try:
         first.start()
-        host_pid = first._hello["host_pid"]
+        tree = _tree(first.pid)
+        assert first._hello["host_pid"] in tree
         registry = first.registry_path
         registry.write_text(bom + registry.read_text(encoding="utf-8"), encoding="utf-8")
 
         assert _supervisor(tmp_path).reconcile_startup_orphan() == "terminated"
-        wait_until(lambda: _gone(host_pid), what="registered host gone")
+        _wait_all_gone(tree)
         assert not registry.exists()
     finally:
         first.shutdown()
@@ -92,10 +114,11 @@ def test_real_compute_host_is_reaped_by_the_next_supervisor(tmp_path, monkeypatc
     first = HostSupervisor(registry_path=tmp_path / "host.json", respawn_max=0, autostart=False)
     try:
         first.start()
-        host_pid = first._hello["host_pid"]
+        tree = _tree(first.pid)
+        assert first._hello["host_pid"] in tree
 
         assert _supervisor(tmp_path).reconcile_startup_orphan() == "terminated"
-        wait_until(lambda: _gone(first.pid) and _gone(host_pid), timeout=30, what="compute host gone")
+        _wait_all_gone(tree, timeout=30)
     finally:
         first.shutdown()
 
@@ -110,11 +133,11 @@ def test_reconcile_kills_the_host_under_a_launcher_pid(tmp_path):
     first = _supervisor(tmp_path, [sys.executable, "-c", launcher, _MARKER])
     try:
         first.start()
-        host_pid = first._hello["host_pid"]
-        assert host_pid != first.pid
+        tree = _tree(first.pid)
+        assert first._hello["host_pid"] in tree and first._hello["host_pid"] != first.pid
 
         assert _supervisor(tmp_path).reconcile_startup_orphan() == "terminated"
-        wait_until(lambda: _gone(first.pid) and _gone(host_pid), what="launcher and host gone")
+        _wait_all_gone(tree)
     finally:
         first.shutdown()
 
