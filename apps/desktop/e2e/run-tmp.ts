@@ -20,5 +20,15 @@ if (!process.env.HERMES_E2E_RUN_TMP) {
   process.env.TMPDIR = root
   process.env.TEMP = root
   process.env.TMP = root
-  process.on('exit', () => fs.rmSync(root, { recursive: true, force: true }))
+  process.on('exit', () => {
+    // A process of the run that is still shutting down (an Electron helper, a backend) can hold a file
+    // here, and on Windows a held file is EPERM/EBUSY, not unlinkable. rmSync retries those a bounded
+    // number of times; whatever is still held after that is left for the OS temp cleanup and reported,
+    // never thrown: an exception in an exit handler replaces the run's own exit status.
+    try {
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 })
+    } catch (error) {
+      process.stderr.write(`[run-tmp] left ${root} behind: ${(error as Error).message}\n`)
+    }
+  })
 }

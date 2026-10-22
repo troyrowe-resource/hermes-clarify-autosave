@@ -447,8 +447,20 @@ class HostSupervisor:
                 return
             self._proc = None
         self._remove_registry()
-        self._fail_pending_turns(reason="crash", message=f"compute host exited with code {code}")
+        message = f"compute host exited with code {code}"
+        self._fail_pending_turns(reason="crash", message=message)
+        self._fail_pending_controls(reason="crash", message=message)
         self._maybe_respawn_after_crash()
+
+    def _fail_pending_controls(self, *, reason: str, message: str) -> None:
+        """Wake every ``control`` / ``respond`` waiter still blocked on the dead host with an ``error`` frame: it
+        will never answer, and each caller (a compress, a Confirm lock, a draft autosave) would otherwise sit out
+        its own timeout before learning the host is gone."""
+        with self._lock:
+            waiters = dict(self._pending_controls)
+        for request_id, q in waiters.items():
+            with contextlib.suppress(queue.Full):
+                q.put_nowait({"type": "error", "request_id": request_id, "reason": reason, "message": message})
 
     def _fail_pending_turns(self, *, reason: str, message: str) -> None:
         with self._lock:

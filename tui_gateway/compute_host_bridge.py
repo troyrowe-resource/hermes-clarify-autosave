@@ -138,6 +138,9 @@ def _relay_compute_host_rpc(message: dict) -> bool:
                             and session.get("_compute_host_turn_id") == params["turn_id"]):
                         session["_compute_host_activity_ns"] = params.get("activity_ns")
         return True  # Internal observation, not a client event or replay entry.
+    if isinstance(message, dict) and message.get("method") == "compute_host.drafts":
+        _mirror_compute_host_drafts(params)
+        return True  # Internal observation (the child's draft book), not a client event or replay entry.
     if (isinstance(message, dict) and message.get("method") == "event" and isinstance(params, dict)
             and not params.get("session_id")):
         # A session-less (global) event the child could not deliver itself: ``write_json`` would drop it
@@ -216,6 +219,27 @@ def _cancel_session_requests(sid: str, reason: str, *, method: str) -> None:
         logger.warning("compute-host request cancel failed sid=%s method=%s", sid, method, exc_info=True)
 
 
+def _compute_host_respond(
+    rid: str, sid: str, payload: dict, what: str, *, timeout: float | None = None,
+) -> tuple[dict | None, dict | None]:
+    """One ``respond`` round trip to the child that owns *sid*'s open request: ``(result, None)`` on success, else
+    ``(None, error response)``. A dead child, a lost ack, a refusal or a malformed reply is always an error here,
+    never a result: nothing is ever reported saved that the child did not confirm."""
+    try:
+        ack = _get_compute_host_supervisor().respond(sid, payload, **({} if timeout is None else {"timeout": timeout}))
+    except Exception as exc:
+        return None, _err(rid, 5019, f"compute-host {what} failed: {exc}")
+    if ack.get("type") in {"respond.error", "error"}:
+        return None, _err(rid, 5019, str(ack.get("message") or f"compute-host {what} failed"))
+    response = ack.get("response")
+    if not isinstance(response, dict):
+        return None, _err(rid, 5019, f"compute-host {what} returned an invalid response")
+    if "error" in response:
+        error = response["error"] if isinstance(response["error"], dict) else {}
+        return None, _err(rid, int(error.get("code") or 5000), str(error.get("message") or f"{what} failed"))
+    return (response["result"] if isinstance(response.get("result"), dict) else {}), None
+
+
 def _lock_compute_host_clarify(rid: str, request_id: str, question_id: str, answer: str | None) -> dict | None:
     """Proxy a batch-clarify lock into the child that owns the request; keeps the parent mirror's locked
     answers current for reconnect snapshots. None when the request is not host-owned."""
@@ -223,28 +247,87 @@ def _lock_compute_host_clarify(rid: str, request_id: str, question_id: str, answ
     if located is None or not _session_uses_compute_host(located[1]):
         return None
     sid, session = located
-    try:
-        ack = _get_compute_host_supervisor().respond(
-            sid, {"lock": {"request_id": request_id, "question_id": question_id, "answer": answer}})
-    except Exception as exc:
-        return _err(rid, 5019, f"compute-host clarify lock failed: {exc}")
-    if ack.get("type") == "respond.error":
-        return _err(rid, 5019, str(ack.get("message") or "compute-host clarify lock failed"))
-    response = ack.get("response")
-    if not isinstance(response, dict):
-        return _err(rid, 5019, "compute-host clarify lock returned an invalid response")
-    if "error" in response:
-        error = response["error"] if isinstance(response["error"], dict) else {}
-        return _err(rid, int(error.get("code") or 5000), str(error.get("message") or "clarify lock failed"))
-    result = response.get("result") if isinstance(response.get("result"), dict) else {}
+    result, failure = _compute_host_respond(
+        rid, sid, {"lock": {"request_id": request_id, "question_id": question_id, "answer": answer}}, "clarify lock")
+    if failure is not None:
+        return failure
     with _history_lock(session):
         if _open_request_matches(session, request_id):
             mirrored = session["_compute_host_open_request"]
             if result.get("status") == "expired" or result.get("remaining") == []:
                 session.pop("_compute_host_open_request", None)
             else:
-                mirrored["params"]["answers"] = {**(mirrored["params"].get("answers") or {}), question_id: answer}
+                mirrored["params"] = {**mirrored["params"],
+                                      "answers": {**(mirrored["params"].get("answers") or {}), question_id: answer}}
     return _ok(rid, result)
+
+
+# A draft op is an autosave, best effort and chatty: unlike a Confirm lock it must never hold the client's
+# connection for long when the child is wedged (the card keeps its own copy and tries again on the next edit).
+_COMPUTE_HOST_DRAFT_WAIT_SECS = 5.0
+
+
+def _hosted_clarify_session(sid: str, request_id: str) -> dict | None:
+    """*sid*'s session record when *request_id* is the batch clarify its compute-host child owns (the parent's
+    mirror), else None. Keyed by the caller's OWN session: the connection's entitlement to it is the caller's to
+    have proven, and another session's request id is not this one's."""
+    session = _sessions.get(sid)
+    if session is None:
+        return None
+    with _history_lock(session):
+        mirrored = session.get("_compute_host_open_request")
+        owned = _open_request_matches(session, request_id) and mirrored.get("method") == "clarify"
+    return session if owned and _session_uses_compute_host(session) else None
+
+
+def _relay_compute_host_clarify_draft(rid: str, sid: str, params: dict) -> dict | None:
+    """Relay a ``clarify.draft`` into the compute-host child that owns the open batch request, whose draft book
+    answers with the in-process statuses and persists under the same ``DraftScope`` the parent reads. The caller
+    has already proven the connection is attached to *sid* and the profile matches (``_clarify_draft_session``);
+    None when the request is not host-owned (the in-process book answers)."""
+    if _hosted_clarify_session(sid, params["request_id"]) is None:
+        return None
+    spec = {key: params[key] for key in ("request_id", "question_id", "choices", "text", "revision") if key in params}
+    result, failure = _compute_host_respond(
+        rid, sid, {"draft": spec}, "clarify draft", timeout=_COMPUTE_HOST_DRAFT_WAIT_SECS)
+    return failure if failure is not None else _ok(rid, result)
+
+
+def _discard_compute_host_clarify_drafts(rid: str, sid: str, request_id: str) -> tuple[bool, dict | None]:
+    """``(live, failure)`` for a ``clarify.drafts.discard`` of a request the compute-host child owns: *live* is
+    whether the child had the book open and closed it; ``(False, None)`` when the request is not host-owned. A
+    relay failure is returned as an error and nothing else is discarded: the child's book may still be open and
+    would re-create the record."""
+    if _hosted_clarify_session(sid, request_id) is None:
+        return False, None
+    result, failure = _compute_host_respond(
+        rid, sid, {"drafts_discard": {"request_id": request_id}}, "clarify drafts discard",
+        timeout=_COMPUTE_HOST_DRAFT_WAIT_SECS)
+    return (result or {}).get("live") is True, failure
+
+
+def _mirror_compute_host_drafts(params) -> None:
+    """Follow the child's draft book in the parent's mirror of its open request, so a reconnecting client's
+    ``open_requests`` snapshot carries the drafts the child holds (``ServerRequest.snapshot`` parity: the key is
+    absent when nothing is drafted). The child pushes its book after every change, in order over one pipe, so the
+    mirror is never older than any ack the client has seen."""
+    session = _sessions.get(str(params.get("session_id") or "")) if isinstance(params, dict) else None
+    if session is None:
+        return
+    with _history_lock(session):
+        if not _open_request_matches(session, params.get("request_id")):
+            return
+        mirrored = session["_compute_host_open_request"]
+        drafts = params.get("drafts")
+        kept = {key: value for key, value in mirrored["params"].items() if key != "drafts"}
+        mirrored["params"] = {**kept, "drafts": drafts} if isinstance(drafts, dict) and drafts else kept
+
+
+def _compute_host_discard_open_drafts(rid, sid: str, spec: dict) -> dict:
+    """Child half of a relayed ``clarify.drafts.discard``: close the open book so a later in-flight save cannot
+    recreate the record. ``live`` says whether a book for *sid*'s request was open."""
+    from tui_gateway import server_requests
+    return _ok(rid, {"live": server_requests.discard_open_drafts(str(spec.get("request_id") or ""), sid)})
 
 
 def _apply_compute_host_metadata_mirror(session: dict, frame: dict | None) -> None:

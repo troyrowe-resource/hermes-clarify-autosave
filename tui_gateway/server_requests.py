@@ -282,6 +282,18 @@ def discard_open_drafts(request_id: str, sid: str) -> bool:
     return True
 
 
+def draft_snapshot(request_id: str, sid: str) -> dict | None:
+    """The drafts :meth:`ServerRequest.snapshot` reports for *sid*'s open batch *request_id* (unfinished, with
+    revisions, never merged into answers); ``None`` when no such open batch exists. A compute-host child pushes
+    it to its parent after every draft change so the parent's mirror of the request replays the same drafts."""
+    req = _open_batch(request_id, sid)
+    if req is None:
+        return None
+    with _lock:
+        locked = set(req.locked)
+    return req.drafts.snapshot(locked)
+
+
 def send_async(method: str, sid: str, params: dict, on_result: Callable[[dict | None], None]) -> Callable[[str], None]:
     """Send one request whose wait is owned elsewhere (the approval queue's own timeout). ``on_result``
     runs on the dispatching thread when the response lands. Returns ``settle(reason)``: call it when

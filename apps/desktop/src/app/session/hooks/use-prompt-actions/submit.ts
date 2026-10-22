@@ -22,6 +22,7 @@ import {
   patchMainComposerAttachmentOccurrence,
   revokeDiscardedAttachmentPreviews
 } from '@/store/composer'
+import { submitWithClarifyBatch } from '@/store/clarify-batch'
 import { serverOwnsComposerQueue } from '@/store/composer-queue'
 import { noteMessageSent } from '@/store/desktop-metrics'
 import { $hudMode } from '@/store/hud'
@@ -1156,7 +1157,13 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                 const params: Record<string, unknown> = { ...prepared.params, session_id: liveId }
 
                 try {
-                  return await requestGateway<SubmitReceipt>('prompt.submit', params, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+                  // A canonical owner is offered `clarify_batch` (one form for the whole clarify question set,
+                  // whose unsent drafts the server keeps); `store/clarify-batch.ts` owns the compatibility ladder.
+                  return await submitWithClarifyBatch(
+                    { canonical: serverQueue, scopeKey: destination.scopeKey },
+                    params,
+                    sent => requestGateway<SubmitReceipt>('prompt.submit', sent, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+                  )
                 } catch (error) {
                   // 4094 is an explicit PRE-admission capability refusal; 4000 is the
                   // legacy `hermes serve` contract refusing `submission_id` as an unknown

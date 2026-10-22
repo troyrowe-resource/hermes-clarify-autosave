@@ -20,6 +20,7 @@
  * Prerequisite: `npm run build` must have been run so that `dist/` exists.
  */
 
+import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -150,13 +151,110 @@ export function createSandbox(prefix: string): Sandbox {
     hermesHome,
     userDataDir,
     cleanup: () => {
+      // Desktop attaches to the gateway it ensured and never stops it: a daemon left running keeps
+      // writing into (and, on Windows, locking) this sandbox, so stop it before removing anything.
+      stopSandboxGatewayDaemons({ hermesHome })
+
       try {
-        fs.rmSync(root, { recursive: true, force: true })
+        fs.rmSync(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 })
       } catch {
         // best-effort
       }
     },
   }
+}
+
+// ─── Sandbox gateway daemon ────────────────────────────────────────────
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+
+    return true
+  } catch (error) {
+    // EPERM: it exists but is not ours to signal; only ESRCH means gone.
+    return (error as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+/**
+ * Whether `pid` is this sandbox's gateway and not an unrelated process that inherited a stale lock's pid.
+ * Linux reads the process environment (it must name the sandbox home); Windows and macOS have no readable
+ * foreign environment, so the lock's own `hermes_home` plus the image/command name is the proof.
+ */
+function isSandboxGateway(pid: number, hermesHome: string): boolean {
+  if (fs.existsSync('/proc/self/environ')) {
+    try {
+      return fs.readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0').includes(`HERMES_HOME=${hermesHome}`)
+    } catch {
+      return false
+    }
+  }
+
+  const probe =
+    process.platform === 'win32'
+      ? spawnSync('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], { encoding: 'utf8', timeout: 30_000, windowsHide: true })
+      : spawnSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8', timeout: 30_000 })
+
+  return process.platform === 'win32' ? /python/i.test(probe.stdout ?? '') : /hermes_cli/.test(probe.stdout ?? '')
+}
+
+/** The pid of the daemon recorded in the sandbox's `gateway.lock` (the lock names its own home), or null. */
+export function sandboxGatewayPid(hermesHome: string): number | null {
+  try {
+    const lock = JSON.parse(fs.readFileSync(path.join(hermesHome, 'gateway.lock'), 'utf8')) as { hermes_home?: string; pid?: number }
+    const pid = Number(lock.pid)
+
+    if (!Number.isInteger(pid) || pid <= 0 || (lock.hermes_home && path.resolve(lock.hermes_home) !== path.resolve(hermesHome))) {
+      return null
+    }
+
+    return processAlive(pid) && isSandboxGateway(pid, hermesHome) ? pid : null
+  } catch {
+    // No lock (it never booted) or an unreadable one: nothing to stop.
+    return null
+  }
+}
+
+/**
+ * Stop the detached `gateway run` daemon `hermes gateway ensure` started for this sandbox: SIGTERM, then
+ * SIGKILL after 15 s (Windows ends the process at once). Returns the pid it stopped, or null when none ran.
+ * A fresh backend after this is a NEW process: the next launch's ensure starts another one.
+ */
+export function stopSandboxGatewayDaemons(sandbox: Pick<Sandbox, 'hermesHome'>): number | null {
+  const pid = sandboxGatewayPid(sandbox.hermesHome)
+
+  if (pid === null) {
+    return null
+  }
+
+  const signal = (sig: NodeJS.Signals) => {
+    try {
+      process.kill(pid, sig)
+    } catch {
+      // Already gone.
+    }
+  }
+
+  signal('SIGTERM')
+
+  for (const deadline = Date.now() + 15_000; processAlive(pid) && Date.now() < deadline; ) {
+    sleepSync(100)
+  }
+
+  if (processAlive(pid)) {
+    signal('SIGKILL')
+
+    for (const deadline = Date.now() + 10_000; processAlive(pid) && Date.now() < deadline; ) {
+      sleepSync(100)
+    }
+  }
+
+  return pid
 }
 
 // ─── Config writing ─────────────────────────────────────────────────────
@@ -286,12 +384,18 @@ export async function launchDesktop(
 
   // `electron .` loads from the package.json `main` field
   // (dist/electron-main.mjs after build).
+  // Electron creates its default userData dir (%APPDATA%\<app name> on Windows: the real installed
+  // app's data) before any app code runs, so the env var alone cannot keep a test out of it; only the
+  // switch can. The env var stays for the app's own resolution.
+  const userDataDir = env.HERMES_DESKTOP_USER_DATA_DIR
+
   const app = await _electron.launch({
     executablePath: electronBin,
     args: [
       DESKTOP_ROOT, // `electron .` — the `.` is the desktop package dir
       '--disable-gpu',
       '--no-sandbox',
+      ...(userDataDir ? [`--user-data-dir=${userDataDir}`] : []),
     ],
     env,
     cwd: DESKTOP_ROOT,
@@ -361,18 +465,66 @@ export async function setupMockBackend(options: MockBackendOptions = {}): Promis
   const env = buildAppEnv(sandbox)
   const { app, page } = await launchDesktop(env)
 
-  return {
+  const fixture: MockBackendFixture = {
     app,
     page,
     mock,
     mockUrl: mock.url,
     sandbox,
     cleanup: async () => {
-      await app.close().catch(() => undefined)
+      // `fixture.app`, not the first launch: `relaunchDesktop` replaces it in place.
+      await fixture.app.close().catch(() => undefined)
+      // The gateway outlives the app (attach mode): stop it, then keep its logs for the evidence artifact
+      // (pass or fail), then drop the sandbox.
+      stopSandboxGatewayDaemons(sandbox)
+      preserveSandboxLogs(sandbox)
       await mock.close()
       sandbox.cleanup()
     },
   }
+
+  return fixture
+}
+
+/**
+ * Copy the sandbox backend's `<HERMES_HOME>/logs` to `$HERMES_E2E_EVIDENCE_DIR/backend-logs/<sandbox>/` when an
+ * evidence directory is set, so a failure on a runner that is gone tomorrow can still be diagnosed. Synthetic
+ * sandbox only; best-effort, never fails a test.
+ */
+export function preserveSandboxLogs(sandbox: Pick<Sandbox, 'hermesHome' | 'root'>): void {
+  const evidence = process.env.HERMES_E2E_EVIDENCE_DIR
+  const logs = path.join(sandbox.hermesHome, 'logs')
+
+  if (!evidence || !fs.existsSync(logs)) {
+    return
+  }
+
+  try {
+    fs.cpSync(logs, path.join(evidence, 'backend-logs', path.basename(sandbox.root)), { recursive: true })
+  } catch {
+    // best-effort
+  }
+}
+
+/**
+ * Quit the app and start it again on the SAME sandbox (same HERMES_HOME, same Electron user data, so the
+ * same localStorage and the same session store). With `freshBackend` the sandbox's gateway daemon is stopped
+ * in between, so the next launch's `gateway ensure` starts a NEW backend process; the old pid is returned.
+ * `fixture.app` / `fixture.page` are replaced in place.
+ */
+export async function relaunchDesktop(
+  fixture: MockBackendFixture,
+  { freshBackend = false, timeoutMs = 120_000 }: { freshBackend?: boolean; timeoutMs?: number } = {},
+): Promise<{ stoppedGatewayPid: number | null }> {
+  await fixture.app.close().catch(() => undefined)
+  const stoppedGatewayPid = freshBackend ? stopSandboxGatewayDaemons(fixture.sandbox) : null
+  const relaunched = await launchDesktop(buildAppEnv(fixture.sandbox))
+
+  fixture.app = relaunched.app
+  fixture.page = relaunched.page
+  await waitForAppReady(fixture, timeoutMs)
+
+  return { stoppedGatewayPid }
 }
 
 export interface NoProviderFixture {
@@ -518,7 +670,7 @@ export async function setupPackagedApp(): Promise<PackagedAppFixture> {
 
   const app = await _electron.launch({
     executablePath: PACKAGED_BINARY_PATH,
-    args: ['--disable-gpu', '--no-sandbox'],
+    args: ['--disable-gpu', '--no-sandbox', `--user-data-dir=${sandbox.userDataDir}`],
     env,
   })
 

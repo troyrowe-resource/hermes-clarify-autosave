@@ -4,12 +4,19 @@ Each subcommand does one bounded job and exits non-zero when its claim does not 
 
   metadata   allowlisted run/source facts (never the raw environment)
   stage      create an empty, owned evidence directory (refuses a non-empty one)
-  guard      the E2E fixture still sets every isolation flag this workflow relies on
+  guard      the E2E fixture still sets every isolation flag this workflow relies on,
+             and every native spec drives the app through that fixture
   sentinels  record which real-install locations exist (default homes, protocol keys)
+             and, beside the snapshot, the bounded entry names inside any that do
   isolation  fail if a sentinel absent before the native run exists after it
-  verify     native evidence + Playwright JSON prove one passing, unretried run
+  verify     Playwright JSON + per-spec evidence prove every spec ran once, unretried, and passed
   collect    copy known evidence files into a size-capped artifact directory
   gate       write the step summary from real step outcomes; fail unless all succeeded
+
+Evidence naming convention (verify). A spec ``clarify-drafts-<slug>.spec.ts`` writes into
+``$HERMES_E2E_EVIDENCE_DIR`` at least one ``<slug>-*.png`` screenshot and a
+``<slug>-observations.json`` object. ``clarify-drafts-native.spec.ts`` (slug ``native``) predates the
+convention and keeps its fixed names and content checks.
 """
 
 from __future__ import annotations
@@ -21,12 +28,16 @@ import os
 import re
 import shutil
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 NATIVE_SPEC = "clarify-drafts-native.spec.ts"
+NATIVE_SPEC_GLOB = "clarify-drafts-native*.spec.ts"
+SPEC_DIR = "apps/desktop/e2e"
 NATIVE_SCREENSHOTS = ("native-01-live-card.png", "native-02-timed-out-card.png", "native-03-recalled.png")
 NATIVE_OBSERVATIONS = "native-observations.json"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+SPEC_NAME = re.compile(r"clarify-drafts-(?P<slug>.+)\.spec\.ts")
 
 METADATA_ENV = (
     "GITHUB_REPOSITORY", "GITHUB_SHA", "GITHUB_REF", "GITHUB_REF_NAME", "GITHUB_RUN_ID",
@@ -45,15 +56,21 @@ FIXTURE_FLAGS = {
     "HERMES_DESKTOP_SKIP_PROTOCOL_REGISTRATION": r"HERMES_DESKTOP_SKIP_PROTOCOL_REGISTRATION:\s*'1'",
 }
 
-# Where a real installed app/home would live. HERMES_DESKTOP_APP_NAME and the
-# sandbox paths must keep the native run out of every one of them.
+# Where a real installed app/home would live. HERMES_DESKTOP_APP_NAME, the sandbox paths and the
+# --user-data-dir switch must keep every run out of all of them.
 SENTINEL_DIRS = (
-    ("LOCALAPPDATA", "hermes"),   # Windows default HERMES_HOME (data-paths.mjs)
-    ("USERPROFILE", ".hermes"),   # Windows legacy home
-    ("APPDATA", "Hermes"),        # default Electron userData for app name "Hermes"
-    ("HOME", ".hermes"),          # POSIX default home
+    ("LOCALAPPDATA", "hermes"),          # Windows default HERMES_HOME (data-paths.mjs)
+    ("USERPROFILE", ".hermes"),          # Windows legacy home
+    ("APPDATA", "Hermes"),               # default Electron userData for app name "Hermes"
+    ("APPDATA", "hermes-desktop"),       # historical desktop userData name (desktop-uninstall.ts)
+    ("LOCALAPPDATA", "hermes-updater"),  # electron-updater cache of the installed app
+    ("HOME", ".hermes"),                 # POSIX default home
 )
 SENTINEL_REGISTRY = (r"Software\Classes\hermes", r"Software\Classes\hermes-dev")
+
+# Sentinel keys with this prefix describe the candidate's own footprint: reported, never gated.
+INFORMATIONAL = "info:"
+ENTRY_LIMIT = 40
 
 ARTIFACT_SUFFIXES = {".png", ".jpg", ".jpeg", ".webm", ".zip", ".json", ".md", ".txt", ".log"}
 
@@ -69,6 +86,11 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(1 << 20), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _base_name(value: object) -> str:
+    """Last path segment of a report path, whichever separator the producing OS used."""
+    return str(value).replace("\\", "/").rsplit("/", 1)[-1]
 
 
 def metadata(args) -> int:
@@ -97,16 +119,46 @@ def stage(args) -> int:
     return 0
 
 
+def discover_specs(directory: Path, pattern: str) -> list[str]:
+    return sorted(path.name for path in directory.glob(pattern) if path.is_file())
+
+
+def spec_slug(name: str) -> str:
+    match = SPEC_NAME.fullmatch(name)
+    return match.group("slug") if match else name.removesuffix(".spec.ts")
+
+
+def _requested_specs(args) -> list[str]:
+    """Spec file names to verify: the explicit ones, else every spec the glob finds."""
+    if args.spec:
+        return [_base_name(name) for name in args.spec]
+    return discover_specs(Path(args.specs_dir), args.spec_glob)
+
+
 def guard(args) -> int:
     text = Path(args.fixtures).read_text(encoding="utf-8-sig")
     missing = [name for name, pattern in FIXTURE_FLAGS.items() if not re.search(pattern, text)]
-    spec = Path(args.spec).read_text(encoding="utf-8-sig")
-    if "setupMockBackend" not in spec:
-        missing.append("spec does not use setupMockBackend")
+    if args.spec:
+        specs = [Path(item) for item in args.spec]
+    else:
+        specs = [Path(args.specs_dir) / name for name in discover_specs(Path(args.specs_dir), args.spec_glob)]
+        if not specs:
+            missing.append(f"no native spec under {args.specs_dir} matches {args.spec_glob}")
+    for spec in specs:
+        source = spec.read_text(encoding="utf-8-sig")
+        # The original spec keeps its strict rule; later ones may restart the app through the fixture
+        # (launchDesktop) provided the sandbox env still comes from buildAppEnv.
+        through_fixture = "setupMockBackend" in source or (
+            spec.name != NATIVE_SPEC and "launchDesktop" in source and "buildAppEnv" in source)
+        if not through_fixture:
+            missing.append(f"{spec.name} does not drive the app through the isolated fixture (setupMockBackend)")
+        if "_electron.launch(" in source:
+            missing.append(f"{spec.name} launches Electron directly instead of through the isolated fixture")
     for name in missing:
         print(f"::error::E2E fixture isolation missing: {name}", file=sys.stderr)
     if not missing:
         print(f"fixture isolation flags present: {', '.join(FIXTURE_FLAGS)}")
+        print(f"native specs drive the app through the fixture: {', '.join(spec.name for spec in specs)}")
     return 1 if missing else 0
 
 
@@ -122,21 +174,66 @@ def _registry_key_exists(subkey: str) -> bool:
         return False
 
 
-def snapshot_sentinels(env: dict[str, str], windows: bool) -> dict[str, bool]:
-    found: dict[str, bool] = {}
+def _sentinel_key(variable: str, leaf: str) -> str:
+    return f"dir:%{variable}%/{leaf}"
+
+
+def _watched(env: dict[str, str], extra: Sequence[tuple[str, str]]) -> dict[str, Path]:
+    found: dict[str, Path] = {}
     for variable, leaf in SENTINEL_DIRS:
         base = env.get(variable)
         if base:
-            found[f"dir:%{variable}%/{leaf}"] = (Path(base) / leaf).exists()
+            found[_sentinel_key(variable, leaf)] = Path(base) / leaf
+    for variable, leaf in extra:
+        base = env.get(variable)
+        if base:
+            found[INFORMATIONAL + _sentinel_key(variable, leaf)] = Path(base) / leaf
+    return found
+
+
+def snapshot_sentinels(env: dict[str, str], windows: bool, extra: Sequence[tuple[str, str]] = ()) -> dict[str, bool]:
+    found = {key: path.exists() for key, path in _watched(env, extra).items()}
     if windows:
         for subkey in SENTINEL_REGISTRY:
             found[f"HKCU:{subkey}"] = _registry_key_exists(subkey)
     return found
 
 
+def sentinel_entries(env: dict[str, str], extra: Sequence[tuple[str, str]] = ()) -> dict[str, dict[str, object]]:
+    """Bounded top-level entry names of every watched directory that exists, so a leak is diagnosable."""
+    detail: dict[str, dict[str, object]] = {}
+    for key, path in _watched(env, extra).items():
+        if not path.is_dir():
+            continue
+        try:
+            names = sorted(child.name for child in path.iterdir())
+        except OSError as error:
+            detail[key] = {"entries": [], "truncated": False, "error": str(error)}
+            continue
+        detail[key] = {"entries": names[:ENTRY_LIMIT], "truncated": len(names) > ENTRY_LIMIT, "count": len(names)}
+    return detail
+
+
+def _extra_watch(items: Sequence[str]) -> list[tuple[str, str]]:
+    watched = []
+    for item in items:
+        variable, sep, leaf = item.partition("/")
+        if not sep or not variable or not leaf:
+            raise SystemExit(f"--informational expects VARIABLE/leaf, got {item!r}")
+        watched.append((variable, leaf))
+    return watched
+
+
+def _entries_path(snapshot: Path) -> Path:
+    return snapshot.with_name(snapshot.stem + ".entries.json")
+
+
 def sentinels(args) -> int:
-    found = snapshot_sentinels(dict(os.environ), os.name == "nt")
+    windows = os.name == "nt"
+    env, extra = dict(os.environ), _extra_watch(args.informational or [])
+    found = snapshot_sentinels(env, windows, extra)
     _write_json(Path(args.out), found)
+    _write_json(_entries_path(Path(args.out)), sentinel_entries(env, extra))
     for key, exists in sorted(found.items()):
         print(f"{'present' if exists else 'absent '} {key}")
     return 0
@@ -148,12 +245,22 @@ def isolation(args) -> int:
     if set(before) != set(after) or not before:
         print("::error::sentinel snapshots do not cover the same locations", file=sys.stderr)
         return 1
+    try:
+        entries = json.loads(_entries_path(Path(args.after)).read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        entries = {}
     created = sorted(key for key, exists in after.items() if exists and not before[key])
+    gated = [key for key in created if not key.startswith(INFORMATIONAL)]
     for key in created:
-        print(f"::error::native run created a real-install location: {key}", file=sys.stderr)
-    if not created:
+        listed = (entries.get(key) or {}).get("entries")
+        detail = f" (entries: {', '.join(listed) if listed else 'none listed'})" if key in entries else ""
+        if key.startswith(INFORMATIONAL):
+            print(f"::warning::native run left a candidate footprint: {key[len(INFORMATIONAL):]}{detail}", file=sys.stderr)
+        else:
+            print(f"::error::native run created a real-install location: {key}{detail}", file=sys.stderr)
+    if not gated:
         print(f"no real-install location appeared ({len(after)} checked)")
-    return 1 if created else 0
+    return 1 if gated else 0
 
 
 def _specs(suite: dict):
@@ -162,7 +269,19 @@ def _specs(suite: dict):
         yield from _specs(child)
 
 
-def check_results(report: dict, spec_name: str) -> list[str]:
+def _tests_of(report: dict, spec_name: str) -> list[dict]:
+    return [
+        test
+        for suite in report.get("suites", [])
+        for spec in _specs(suite)
+        if _base_name(spec.get("file", "")) == spec_name
+        for test in spec.get("tests", [])
+    ]
+
+
+def check_results(report: dict, specs: str | Sequence[str]) -> list[str]:
+    """Problems that stop a Playwright JSON report from proving every named spec ran once and passed."""
+    spec_names = [specs] if isinstance(specs, str) else list(specs)
     problems: list[str] = []
     if report.get("errors"):
         problems.append(f"Playwright reported {len(report['errors'])} top-level error(s)")
@@ -172,41 +291,49 @@ def check_results(report: dict, spec_name: str) -> list[str]:
     for key in ("unexpected", "flaky", "skipped"):
         if stats.get(key, 0):
             problems.append(f"Playwright stats {key}={stats[key]}")
-    tests = [
-        test
-        for suite in report.get("suites", [])
-        for spec in _specs(suite)
-        if Path(str(spec.get("file", ""))).name == spec_name
-        for test in spec.get("tests", [])
-    ]
-    if not tests:
-        problems.append(f"no test from {spec_name} in the report")
-    for test in tests:
-        results = test.get("results") or []
-        if test.get("status") != "expected":
-            problems.append(f"test status {test.get('status')!r}")
-        if len(results) != 1 or results[0].get("retry", 0) != 0:
-            problems.append(f"test ran {len(results)} attempt(s); exactly one unretried attempt required")
-        elif results[0].get("status") != "passed":
-            problems.append(f"test result {results[0].get('status')!r}")
+    total = 0
+    for spec_name in spec_names:
+        tests = _tests_of(report, spec_name)
+        total += len(tests)
+        if not tests:
+            problems.append(f"no test from {spec_name} in the report")
+        for test in tests:
+            results = test.get("results") or []
+            if test.get("status") != "expected":
+                problems.append(f"{spec_name}: test status {test.get('status')!r}")
+            if len(results) != 1 or results[0].get("retry", 0) != 0:
+                problems.append(f"{spec_name}: test ran {len(results)} attempt(s); exactly one unretried attempt required")
+            elif results[0].get("status") != "passed":
+                problems.append(f"{spec_name}: test result {results[0].get('status')!r}")
+    if total and stats.get("expected", 0) < total:
+        problems.append(f"Playwright stats expected={stats.get('expected', 0)} but the named specs hold {total} test(s)")
     return problems
 
 
-def check_evidence(directory: Path) -> list[str]:
-    problems: list[str] = []
-    for name in NATIVE_SCREENSHOTS:
-        path = directory / name
-        if not path.is_file() or path.stat().st_size <= len(PNG_SIGNATURE):
-            problems.append(f"missing or empty screenshot {name}")
-        elif path.read_bytes()[: len(PNG_SIGNATURE)] != PNG_SIGNATURE:
-            problems.append(f"{name} is not a PNG")
-    path = directory / NATIVE_OBSERVATIONS
+def _png_problem(path: Path, label: str) -> str | None:
+    if not path.is_file() or path.stat().st_size <= len(PNG_SIGNATURE):
+        return f"missing or empty screenshot {label}"
+    if path.read_bytes()[: len(PNG_SIGNATURE)] != PNG_SIGNATURE:
+        return f"{label} is not a PNG"
+    return None
+
+
+def _load_object(path: Path, label: str) -> tuple[dict | None, list[str]]:
     try:
         observations = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as error:
-        return problems + [f"unreadable {NATIVE_OBSERVATIONS}: {error}"]
+        return None, [f"unreadable {label}: {error}"]
     if not isinstance(observations, dict):
-        return problems + [f"{NATIVE_OBSERVATIONS} is not an object"]
+        return None, [f"{label} is not an object"]
+    return observations, []
+
+
+def check_evidence(directory: Path) -> list[str]:
+    """The original native scenario's fixed evidence: three screenshots and its observations."""
+    problems = [problem for name in NATIVE_SCREENSHOTS if (problem := _png_problem(directory / name, name))]
+    observations, errors = _load_object(directory / NATIVE_OBSERVATIONS, NATIVE_OBSERVATIONS)
+    if observations is None:
+        return problems + errors
     rows = observations.get("rowStates")
     if not isinstance(rows, list) or len(rows) != 2:
         problems.append("observations.rowStates must list the two draft rows")
@@ -217,27 +344,95 @@ def check_evidence(directory: Path) -> list[str]:
     return problems
 
 
+def _dotted(value: object, dotted: str) -> object:
+    for part in dotted.split("."):
+        if not isinstance(value, dict) or part not in value:
+            return None
+        value = value[part]
+    return value
+
+
+def _same(actual: object, expected: str) -> bool:
+    if isinstance(actual, bool):
+        return str(actual).lower() == expected.lower()
+    return actual is not None and str(actual) == expected
+
+
+def check_spec_evidence(directory: Path, slug: str, slugs: Sequence[str], expectations: Sequence[str] = ()) -> list[str]:
+    """Evidence of one later spec: >=1 valid ``<slug>-*.png`` and a ``<slug>-observations.json`` object.
+
+    A file belongs to the longest slug it starts with, so ``native-restart-1.png`` is never credited to
+    the ``native`` spec. ``expectations`` are ``dotted.key=value`` facts the observations must state.
+    """
+    problems: list[str] = []
+    longer = [other for other in slugs if other != slug and other.startswith(f"{slug}-")]
+    owned = sorted(
+        path for path in directory.glob(f"{slug}-*.png")
+        if not any(path.name.startswith(f"{other}-") for other in longer)
+    ) if directory.is_dir() else []
+    if not owned:
+        problems.append(f"{slug}: no {slug}-*.png screenshot in the evidence directory")
+    problems += [f"{slug}: {problem}" for path in owned if (problem := _png_problem(path, path.name))]
+    label = f"{slug}-observations.json"
+    observations, errors = _load_object(directory / label, label)
+    if observations is None:
+        return problems + [f"{slug}: {error}" for error in errors]
+    if not observations:
+        problems.append(f"{slug}: {label} is empty")
+    for item in expectations:
+        key, sep, expected = item.partition("=")
+        if not sep or not key:
+            raise SystemExit(f"--expect-observation expects dotted.key=value, got {item!r}")
+        actual = _dotted(observations, key)
+        if not _same(actual, expected):
+            problems.append(f"{slug}: {label} {key}={actual!r}, expected {expected!r}")
+    return problems
+
+
+def _slug_expectations(items: Sequence[str]) -> dict[str, list[str]]:
+    by_slug: dict[str, list[str]] = {}
+    for item in items:
+        slug, sep, rest = item.partition(":")
+        if not sep or not slug or "=" not in rest:
+            raise SystemExit(f"--expect-observation expects slug:dotted.key=value, got {item!r}")
+        by_slug.setdefault(slug, []).append(rest)
+    return by_slug
+
+
 def verify(args) -> int:
     problems: list[str] = []
+    specs = _requested_specs(args)
+    if not specs:
+        problems.append(f"no native spec found under {args.specs_dir} matching {args.spec_glob}")
     try:
         report = json.loads(Path(args.results).read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as error:
         report = None
         problems.append(f"unreadable Playwright JSON report: {error}")
-    if report is not None:
-        problems += check_results(report, args.spec)
-    problems += check_evidence(Path(args.evidence))
+    if report is not None and specs:
+        problems += check_results(report, specs)
+    evidence = Path(args.evidence)
+    slugs = [spec_slug(name) for name in specs]
+    expectations = _slug_expectations(args.expect_observation or [])
+    for name in specs:
+        slug = spec_slug(name)
+        if name == NATIVE_SPEC:
+            problems += check_evidence(evidence)
+        else:
+            problems += check_spec_evidence(evidence, slug, slugs, expectations.get(slug, []))
     summary = {
         "verdict": "failed" if problems else "passed",
         "problems": problems,
-        "spec": args.spec,
-        "evidence_files": sorted(p.name for p in Path(args.evidence).glob("*")) if Path(args.evidence).is_dir() else [],
+        "specs": {
+            name: len(_tests_of(report, name)) if report is not None else 0 for name in specs
+        },
+        "evidence_files": sorted(p.name for p in evidence.glob("*")) if evidence.is_dir() else [],
         "stats": (report or {}).get("stats"),
     }
     _write_json(Path(args.out), summary)
     for problem in problems:
         print(f"::error::native evidence: {problem}", file=sys.stderr)
-    print(f"native evidence verdict: {summary['verdict']}")
+    print(f"native evidence verdict: {summary['verdict']} ({len(specs)} spec(s): {', '.join(specs) or 'none'})")
     return 1 if problems else 0
 
 
@@ -297,7 +492,7 @@ def gate(args) -> int:
     if not verdict or verdict.get("verdict") != "passed":
         passed = False
     lines = [
-        "## Clarify drafts: Windows native evidence",
+        f"## {args.title}",
         "",
         f"Overall: **{'PASSED' if passed else 'FAILED'}**",
         "",
@@ -305,11 +500,11 @@ def gate(args) -> int:
         "| --- | --- |",
         *(f"| {name} | {value} |" for name, value in outcomes),
         "",
-        f"Native evidence verdict: {verdict.get('verdict') if verdict else 'absent'}",
+        f"Evidence verdict: {verdict.get('verdict') if verdict else 'absent'}",
     ]
     for problem in (verdict or {}).get("problems", []):
         lines.append(f"- {problem}")
-    lines += ["", "Source build and native test evidence only; not a packaged or signed Windows release."]
+    lines += ["", args.note]
     text = "\n".join(lines) + "\n"
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
@@ -317,6 +512,12 @@ def gate(args) -> int:
             stream.write(text)
     print(text)
     return 0 if passed else 1
+
+
+def _add_spec_selection(parser: argparse.ArgumentParser, help_text: str) -> None:
+    parser.add_argument("--spec", action="append", help=help_text)
+    parser.add_argument("--specs-dir", default=SPEC_DIR)
+    parser.add_argument("--spec-glob", default=NATIVE_SPEC_GLOB)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -335,11 +536,13 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("guard")
     p.add_argument("--fixtures", default="apps/desktop/e2e/fixtures.ts")
-    p.add_argument("--spec", default=f"apps/desktop/e2e/{NATIVE_SPEC}")
+    _add_spec_selection(p, "spec file path (repeatable); default: every spec the glob finds")
     p.set_defaults(func=guard)
 
     p = sub.add_parser("sentinels")
     p.add_argument("--out", required=True)
+    p.add_argument("--informational", action="append",
+                   help="VARIABLE/leaf directory to report but never gate on (the candidate's own footprint)")
     p.set_defaults(func=sentinels)
 
     p = sub.add_parser("isolation")
@@ -350,7 +553,9 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("verify")
     p.add_argument("--evidence", required=True)
     p.add_argument("--results", required=True)
-    p.add_argument("--spec", default=NATIVE_SPEC)
+    _add_spec_selection(p, "spec file name (repeatable); default: every spec the glob finds")
+    p.add_argument("--expect-observation", action="append",
+                   help="slug:dotted.key=value the spec's observations must state (repeatable)")
     p.add_argument("--out", required=True)
     p.set_defaults(func=verify)
 
@@ -364,6 +569,8 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("gate")
     p.add_argument("--outcome", action="append", default=[], help="step=outcome")
     p.add_argument("--verify", help="verify summary JSON")
+    p.add_argument("--title", default="Clarify drafts: Windows native evidence")
+    p.add_argument("--note", default="Source build and native test evidence only; not a packaged or signed Windows release.")
     p.set_defaults(func=gate)
 
     args = parser.parse_args(argv)

@@ -200,11 +200,23 @@ class ComputeHost:
             self._reply("interrupt.ack", sid, request_id, applied=True, applied_ns=now_ns())
         self._guarded(frame, "interrupt.ack", body, applied=False)
 
+    def _publish_drafts(self, sid: str, request_id: Any) -> None:
+        """Tell the parent what this host's draft book for *sid*'s open batch request holds now, so its mirror of
+        the request replays the same drafts to a reconnecting client (``_mirror_compute_host_drafts``). Nothing
+        when no such request is open (settled, or not this session's). Emitted before the op's ack, in order."""
+        from tui_gateway import server_requests
+        drafts = server_requests.draft_snapshot(str(request_id or ""), sid)
+        if drafts is not None:
+            self._transport.write({"jsonrpc": "2.0", "method": "compute_host.drafts", "params": {
+                "session_id": sid, "request_id": request_id, "drafts": drafts}})
+
     def _handle_respond(self, frame: dict[str, Any]) -> None:
         """Resolve a server→client request this host owns: ``params.frame`` is the client's JSON-RPC response
         frame relayed by the parent; ``params.lock`` is one batch-clarify lock (answered with ``clarify.lock``'s
-        result so the parent can ack the client); ``params.cancel`` withdraws this session's open requests of
-        one ``method`` (the parent's own cancel never reaches a wait owned here)."""
+        result so the parent can ack the client); ``params.draft`` / ``params.drafts_discard`` save or discard
+        the request's unsent drafts in the book this host holds (the same statuses as the in-process handlers;
+        the parent has already proven the caller may touch the session); ``params.cancel`` withdraws this
+        session's open requests of one ``method`` (the parent's own cancel never reaches a wait owned here)."""
         def body(server: Any, sid: str, request_id: Any) -> None:
             params = frame.get("params")
             error = ("session not found" if sid not in server._sessions
@@ -215,6 +227,13 @@ class ComputeHost:
             from tui_gateway import server_requests
             if isinstance(params.get("lock"), dict):
                 response = server._methods["clarify.lock"](request_id, params["lock"])
+                self._publish_drafts(sid, params["lock"].get("request_id"))  # a lock supersedes its question's draft
+            elif isinstance(draft := params.get("draft"), dict):
+                response = server._clarify_draft_save(request_id, sid, draft)
+                self._publish_drafts(sid, draft.get("request_id"))
+            elif isinstance(discard := params.get("drafts_discard"), dict):
+                response = server._compute_host_discard_open_drafts(request_id, sid, discard)
+                self._publish_drafts(sid, discard.get("request_id"))
             elif isinstance(cancel := params.get("cancel"), dict):
                 withdrawn = server_requests.cancel(sid, str(cancel.get("reason") or "resolved"), method=str(cancel["method"]))
                 response = {"jsonrpc": "2.0", "id": request_id, "result": {"cancelled": withdrawn}}

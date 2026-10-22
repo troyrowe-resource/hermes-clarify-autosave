@@ -65,12 +65,20 @@ backgroundReleasePath?: string
 port?: number
 }
 
+/** One chat completion request as the mock model received it. */
+export interface MockChatRequest {
+  model: string
+  messages: any[]
+}
+
 export interface MockServer {
   port: number
   url: string
   receivedPrompts: string[]
   /** The `model` field of every chat completion request, in arrival order. */
   receivedModels: string[]
+  /** Every chat completion request's `model` and full `messages` array (tool results included), in arrival order. */
+  receivedChatRequests: MockChatRequest[]
   waitForHeldStream: () => Promise<void>
   waitForHeldCompletion: () => Promise<void>
   releaseHeldStream: () => void
@@ -424,6 +432,40 @@ const SINGLE_BATCH_CLARIFY_TURN: ScriptedTurn = {
   toolCalls: [{ name: 'clarify', args: { questions: SINGLE_BATCH_CLARIFY_QUESTIONS } }],
 }
 
+/**
+ * A marker that makes the mock emit a blocking batch clarify of three KINDS of question, for the clarify draft
+ * autosave acceptance: a multi-select (pick, add, deselect), a single-select, and a free-text question with
+ * no choices. As with the other batch triggers only the first completion of the conversation scripts it; once a
+ * tool result is in the history the turn falls through to the canned reply.
+ */
+export const MIXED_CLARIFY_TRIGGER = 'E2E_MIXED_CLARIFY_TRIGGER'
+export const MIXED_CLARIFY_QUESTIONS = [
+  { question: 'Pick any mixed toppings?', choices: ['Alpha', 'Bravo', 'Charlie'], multi_select: true },
+  { question: 'Pick a mixed drink?', choices: ['Coffee', 'Tea'] },
+  { question: 'Anything else to tell us?' },
+]
+
+const MIXED_CLARIFY_TURN: ScriptedTurn = {
+  text: '',
+  toolCalls: [{ name: 'clarify', args: { questions: MIXED_CLARIFY_QUESTIONS } }],
+}
+
+function includesMixedClarifyTrigger(value: unknown): boolean {
+  if (typeof value === 'string') {
+    return value.includes(MIXED_CLARIFY_TRIGGER)
+  }
+
+  if (Array.isArray(value)) {
+    return value.some(includesMixedClarifyTrigger)
+  }
+
+  if (value && typeof value === 'object') {
+    return Object.values(value).some(includesMixedClarifyTrigger)
+  }
+
+  return false
+}
+
 function includesBatchClarifyTrigger(value: unknown): boolean {
   if (typeof value === 'string') {
     return value.includes(BATCH_CLARIFY_TRIGGER)
@@ -609,6 +651,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
   return new Promise((resolve, reject) => {
     const receivedPrompts: string[] = []
     const receivedModels: string[] = []
+    const receivedChatRequests: MockChatRequest[] = []
     let resolveHeldStreamStarted: (() => void) | null = null
     let releaseHeldStream: (() => void) | null = null
     let heldCompletionCount = 0
@@ -706,6 +749,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
           const stream = parsed.stream === true
           const model = parsed.model || 'mock-model'
           receivedModels.push(model)
+          receivedChatRequests.push({ model, messages: Array.isArray(parsed.messages) ? parsed.messages : [] })
 
           const holdThisCompletion = Boolean(
             options.holdFirstCompletionContaining &&
@@ -818,6 +862,21 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
                 streamScriptedTurn(res, model, SINGLE_BATCH_CLARIFY_TURN)
               } else {
                 nonStreamingScriptedTurn(res, model, SINGLE_BATCH_CLARIFY_TURN)
+              }
+
+              return
+            }
+          }
+
+          if (includesMixedClarifyTrigger(parsed.messages)) {
+            const hasToolResult = Array.isArray(parsed.messages)
+              && parsed.messages.some((message: { role?: string }) => message?.role === 'tool')
+
+            if (!hasToolResult) {
+              if (stream) {
+                streamScriptedTurn(res, model, MIXED_CLARIFY_TURN)
+              } else {
+                nonStreamingScriptedTurn(res, model, MIXED_CLARIFY_TURN)
               }
 
               return
@@ -1019,6 +1078,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
         url,
         receivedPrompts,
         receivedModels,
+        receivedChatRequests,
         waitForHeldStream: () => heldStreamStarted,
         waitForHeldCompletion: () => heldStreamStarted,
         releaseHeldStream: () => releaseHeldStream?.(),

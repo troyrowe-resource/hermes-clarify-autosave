@@ -1291,7 +1291,8 @@ def _(rid, params: dict) -> dict:
 # reads a session's saved drafts back (after a timeout, cancel, reconnect or restart) and
 # ``clarify.drafts.discard`` drops one request's. All three require the calling connection to be attached
 # to the live session (``_current_session_steer_authority``) whose stored id and profile own the drafts;
-# a request id alone never grants access.
+# a request id alone never grants access. A save or discard for a batch request the compute-host child owns
+# (turn isolation) is relayed there after that check (``compute_host_bridge``); reads come from disk here.
 
 
 def _clarify_draft_scope(sid: str):
@@ -1334,23 +1335,32 @@ def _clarify_draft_session(rid, params: dict):
     return sid, None
 
 
+def _clarify_draft_save(rid, sid: str, params: dict) -> dict:
+    """One ``clarify.draft`` against the open batch request THIS process holds. The compute-host child runs the
+    very same save for a draft its parent relays (``compute_host_bridge``), so every status is one rule."""
+    from tools.clarify_drafts import DraftError
+    from tui_gateway import server_requests
+    try:
+        saved = server_requests.save_draft(params["request_id"], sid, params["question_id"],
+                                           params.get("choices", []), params.get("text", ""), params.get("revision"))
+    except (DraftError, ValueError) as e:
+        return _err(rid, 4002, str(e))
+    # A settled, unknown or other session's request: nothing to save against (the card keeps its copy).
+    return _ok(rid, saved if saved is not None else {"status": "expired"})
+
+
 @method("clarify.draft")
 def _(rid, params: dict) -> dict:
-    from tools.clarify_drafts import DraftError
     sid, error = _clarify_draft_session(rid, params)
     if error:
         return error
     request_id, question_id = params.get("request_id"), params.get("question_id")
     if not isinstance(request_id, str) or not request_id or not isinstance(question_id, str) or not question_id:
         return _err(rid, 4002, "request_id and question_id required")
-    from tui_gateway import server_requests
-    try:
-        saved = server_requests.save_draft(request_id, sid, question_id, params.get("choices", []),
-                                           params.get("text", ""), params.get("revision"))
-    except (DraftError, ValueError) as e:
-        return _err(rid, 4002, str(e))
-    # A settled, unknown or other session's request: nothing to save against (the card keeps its copy).
-    return _ok(rid, saved if saved is not None else {"status": "expired"})
+    # Under turn isolation the batch request lives in the compute-host child: saved there, after the entitlement above.
+    if (hosted := _relay_compute_host_clarify_draft(rid, sid, params)) is not None:
+        return hosted
+    return _clarify_draft_save(rid, sid, params)
 
 
 @method("clarify.drafts")
@@ -1378,6 +1388,10 @@ def _(rid, params: dict) -> dict:
     from tui_gateway import server_requests
     # A still-open request's book is closed for drafts first, so an in-flight save cannot recreate them.
     live = server_requests.discard_open_drafts(request_id, sid)
+    if not live:
+        live, failure = _discard_compute_host_clarify_drafts(rid, sid, request_id)
+        if failure is not None:
+            return failure
     scope = _clarify_draft_scope(sid)
     stored = scope is not None and discard(scope, request_id)
     return _ok(rid, {"status": "ok" if live or stored else "missing"})
