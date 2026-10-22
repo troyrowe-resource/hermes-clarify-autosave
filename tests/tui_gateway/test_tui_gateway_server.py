@@ -20520,12 +20520,12 @@ def test_speak_text_with_barge_no_monitor_when_voice_mode_off(monkeypatch):
 
 
 def _capture_server_request(monkeypatch, result):
-    """Stub the server-request send and capture (method, sid, params, timeout)."""
+    """Stub the server-request send (same keywords as the real ``server_requests.send``) and capture every argument."""
     from tui_gateway import server_requests
     captured = {}
 
-    def fake_send(method, sid, params, *, timeout, qids=None):
-        captured.update(method=method, sid=sid, params=params, timeout=timeout, qids=qids)
+    def fake_send(method, sid, params, *, timeout, qids=None, draft_scope=None):
+        captured.update(method=method, sid=sid, params=params, timeout=timeout, qids=qids, draft_scope=draft_scope)
         return result
 
     monkeypatch.setattr(server_requests, "send", fake_send)
