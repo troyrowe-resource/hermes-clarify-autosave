@@ -638,13 +638,16 @@ jobs:
           python -S scripts/clarify_ci/candidate.py audit --app "$UNPACKED" --commit "$GITHUB_SHA" \
             --authenticode "$CLARIFY_EVIDENCE/authenticode.json" --out "$CLARIFY_EVIDENCE/candidate-audit.json"
 
+      # The bundled payload ships an all-extras venv and the lock-scoped uv cache: run 39788905289 measured
+      # 115,772 files, 6.53 GB unpacked, 3,224,609,056 bytes zipped (3075 MiB), just over a 3072 bound.
+      # The bound stays a runaway guard with headroom over that measurement, not a fit to it.
       - name: Assemble the candidate zip, MANIFEST.json and SHA256SUMS.txt
         id: assemble
         env:
           UNPACKED: ${{ steps.locate.outputs.unpacked }}
         run: |
           python -S scripts/clarify_ci/candidate.py assemble --app "$UNPACKED" --commit "$GITHUB_SHA" \
-            --template scripts/clarify_ci/candidate-package --out-dir "$CANDIDATE_OUT" --max-zip-mb 3072 \
+            --template scripts/clarify_ci/candidate-package --out-dir "$CANDIDATE_OUT" --max-zip-mb 4096 \
             --provenance source-provenance.json --authenticode "$CLARIFY_EVIDENCE/authenticode.json"
           ls -l "$CANDIDATE_OUT"
 
