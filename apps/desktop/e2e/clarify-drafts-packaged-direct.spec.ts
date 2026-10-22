@@ -93,7 +93,9 @@ async function waitForInteractive(page: Page, timeoutMs: number): Promise<void> 
     () => {
       const text = document.getElementById('root')?.textContent ?? ''
 
-      return Boolean(document.querySelector('[data-slot="composer-root"]')) || /provider|Choose|API key|Sign in/i.test(text)
+      return (
+        Boolean(document.querySelector('[data-slot="composer-root"]')) || /provider|Choose|API key|Sign in/i.test(text)
+      )
     },
     undefined,
     { timeout: timeoutMs }
@@ -146,7 +148,10 @@ test.describe('clarify drafts (packaged candidate, started directly)', () => {
     let home: null | string = null
 
     try {
-      check(Boolean(appData && localAppData && userProfile), 'APPDATA, LOCALAPPDATA and USERPROFILE name the real profile')
+      check(
+        Boolean(appData && localAppData && userProfile),
+        'APPDATA, LOCALAPPDATA and USERPROFILE name the real profile'
+      )
       expect(pkg.manifest.source.commit, 'the package manifest names the commit under test').toBe(commit)
 
       // The point of the test: nothing of the launcher's, and no opt-out of the OS handler registration.
@@ -160,7 +165,9 @@ test.describe('clarify drafts (packaged candidate, started directly)', () => {
       observations.environment = {
         decoyHome: CONFIG.decoyHome ?? null,
         hermesHomeExported: env.HERMES_HOME ?? null,
-        names: Object.keys(env).filter(name => name.toUpperCase().startsWith('HERMES_')).sort()
+        names: Object.keys(env)
+          .filter(name => name.toUpperCase().startsWith('HERMES_'))
+          .sort()
       }
 
       app = await test.step('start the executable directly, as a double-click does', () =>
@@ -177,7 +184,9 @@ test.describe('clarify drafts (packaged candidate, started directly)', () => {
       started.process().stderr?.on('data', collect)
 
       const page = await started.firstWindow().catch((error: Error) => {
-        throw new Error(`the packaged app never opened a window: ${error.message.split('\n')[0]}\n${logs.slice(-60).join('\n')}`)
+        throw new Error(
+          `the packaged app never opened a window: ${error.message.split('\n')[0]}\n${logs.slice(-60).join('\n')}`
+        )
       })
 
       await waitForInteractive(page, 300_000)
@@ -217,7 +226,10 @@ test.describe('clarify drafts (packaged candidate, started directly)', () => {
         facts.userDataIsCandidateOwn,
         `Electron user data is ${main.paths.userData}, not the candidate's own ${expectedUserData}`
       )
-      check(facts.hermesHomeIsCandidateOwn, `the Hermes home is ${info.hermesHome}, not the candidate's own ${expectedHome}`)
+      check(
+        facts.hermesHomeIsCandidateOwn,
+        `the Hermes home is ${info.hermesHome}, not the candidate's own ${expectedHome}`
+      )
       check(
         facts.bakedHermesHomeClearActive,
         `the baked bundle environment did not clear the exported HERMES_HOME (${main.env.HERMES_HOME})`
