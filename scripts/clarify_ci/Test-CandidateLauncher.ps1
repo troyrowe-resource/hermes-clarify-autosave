@@ -82,8 +82,9 @@ $exe = Join-Path $package ('app\' + $exeName)
 & $csc /nologo /target:exe ('/out:' + $exe) $source | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'could not compile the stand-in executable' }
 
-function Write-PackageFiles([string]$UpdateMechanism = 'external', [string]$BuildSource = 'commit-build') {
-    $stamp = [ordered]@{ source = $BuildSource; updateMechanism = $UpdateMechanism; payload = 'bundled'; commit = $commit }
+function Write-PackageFiles([string]$UpdateMechanism = 'external', [string]$BuildSource = 'commit-build', [string]$Suffix = '-clarify-candidate') {
+    $baked = [ordered]@{ HERMES_DATA_DIR_SUFFIX = $Suffix; HERMES_HOME = $null }
+    $stamp = [ordered]@{ source = $BuildSource; updateMechanism = $UpdateMechanism; payload = 'bundled'; commit = $commit; bundleEnv = $baked }
     Set-Content -LiteralPath (Join-Path $package 'app\resources\install-stamp.json') -Value ($stamp | ConvertTo-Json) -Encoding ASCII
     $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant()
     $manifest = [ordered]@{
@@ -210,6 +211,12 @@ Assert-Case 'refuses a build that is not a one-commit build (exit 4)' {
     try { $run = Invoke-Launcher 'Start-HermesClarifyCandidate.ps1' @('-Root', (Join-Path $work 's5'), '-EmitEnvironment') }
     finally { Write-PackageFiles }
     if ($run.Code -ne 4 -or $run.Err -notmatch "source=") { return "exit $($run.Code): $($run.Err.Trim())" }
+}
+Assert-Case 'refuses a build that does not bake the candidate data directory, which a double-click would need (exit 4)' {
+    Write-PackageFiles 'external' 'commit-build' '-someone-else'
+    try { $run = Invoke-Launcher 'Start-HermesClarifyCandidate.ps1' @('-Root', (Join-Path $work 's6'), '-EmitEnvironment') }
+    finally { Write-PackageFiles }
+    if ($run.Code -ne 4 -or $run.Err -notmatch 'bundleEnv') { return "exit $($run.Code): $($run.Err.Trim())" }
 }
 
 # --- A real start: the stand-in executable sees exactly the launch contract --------------------------------------------

@@ -9,6 +9,9 @@
 # Exit codes: 2 unsafe location, 3 package integrity, 4 not a candidate-shaped build, 5 start failure.
 
 $script:SandboxMarker = '.hermes-clarify-candidate-sandbox'
+# Appended to the default Hermes home and Electron user data directory names. The build bakes the same value
+# into the app (scripts/clarify_ci/candidate.py BUNDLE_ENV); the launcher refuses a package that does not carry it.
+$script:DataDirSuffix = '-clarify-candidate'
 
 function Stop-Refused {
     param([int]$Code, [string]$Message)
@@ -185,6 +188,14 @@ function Get-CandidatePackage {
             Stop-Refused 4 "the build stamp says $($pair[0])='$actual', not '$($pair[1])'. The launcher only starts a one-commit bundled build that cannot update itself."
         }
     }
+    # The baked defaults are what keep a start WITHOUT this launcher (a double-click on the .exe) out of a real
+    # Hermes home: a data directory of its own, and no inherited or registry HERMES_HOME.
+    $baked = $stamp.PSObject.Properties['bundleEnv']
+    $bakedSuffix = if ($baked -and $baked.Value) { $baked.Value.PSObject.Properties['HERMES_DATA_DIR_SUFFIX'] } else { $null }
+    $bakedHome = if ($baked -and $baked.Value) { $baked.Value.PSObject.Properties['HERMES_HOME'] } else { $null }
+    if (-not $bakedSuffix -or [string]$bakedSuffix.Value -cne $script:DataDirSuffix -or -not $bakedHome -or $null -ne $bakedHome.Value) {
+        Stop-Refused 4 "the build stamp does not bake the candidate's own data directory (bundleEnv must set HERMES_DATA_DIR_SUFFIX='$script:DataDirSuffix' and clear HERMES_HOME). Starting it would not be isolated."
+    }
     return @{ Manifest = $manifest; Exe = $exe; Stamp = $stamp }
 }
 
@@ -211,7 +222,7 @@ function Get-CandidateEnvironment {
         HERMES_DESKTOP_ISOLATED_BACKEND            = '1'
         HERMES_DESKTOP_SKIP_PROTOCOL_REGISTRATION  = '1'
         HERMES_DESKTOP_APP_NAME                    = "HermesClarifyCandidate-$sha7"
-        HERMES_DATA_DIR_SUFFIX                     = '-clarify-candidate'
+        HERMES_DATA_DIR_SUFFIX                     = $script:DataDirSuffix
         USERPROFILE                                = $Layout.profile
         HOME                                       = $Layout.profile
         HOMEDRIVE                                  = $homeDrive
