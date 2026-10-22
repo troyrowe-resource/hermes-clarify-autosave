@@ -13,6 +13,7 @@ import {
   stopVoicePlayback,
   takeVoicePlaybackInterrupted
 } from '@/lib/voice-playback'
+import { submitWithClarifyBatch } from '@/store/clarify-batch'
 import {
   $composerAttachments,
   type ComposerAttachment,
@@ -22,7 +23,6 @@ import {
   patchMainComposerAttachmentOccurrence,
   revokeDiscardedAttachmentPreviews
 } from '@/store/composer'
-import { submitWithClarifyBatch } from '@/store/clarify-batch'
 import { serverOwnsComposerQueue } from '@/store/composer-queue'
 import { noteMessageSent } from '@/store/desktop-metrics'
 import { $hudMode } from '@/store/hud'
