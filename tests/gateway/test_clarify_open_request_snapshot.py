@@ -90,8 +90,8 @@ async def test_a_reconnecting_viewer_gets_the_open_batch_with_its_locks_and_draf
 async def test_a_settled_request_never_reappears_after_a_reconnect(tmp_path, monkeypatch, ending):
     authority, connection = await _owner(tmp_path, monkeypatch)
     agent = SimpleNamespace(_interrupt_requested=False)
-    peer, worker, out = _start_batch(authority, monkeypatch, timeout=2 if ending == 'timed_out' else 60,
-                                     interrupted=agent)
+    peer, worker, _out = _start_batch(authority, monkeypatch, timeout=2 if ending == 'timed_out' else 60,
+                                      interrupted=agent)
     rid = await _rid(peer)
     await _draft(connection, rid, 'q0', text='typed', revision=1)
     if ending == 'submitted':
@@ -119,8 +119,8 @@ async def test_only_a_viewer_attached_with_respond_gets_the_request_never_anothe
     from gateway.session_authority import LiveSession
     from gateway.session import SessionSource
     authority, owner = await _owner(tmp_path / 'a', monkeypatch)
-    foreign_authority, foreign = await _owner(tmp_path / 'b', monkeypatch, own_home=True)
-    peer, worker, out = _start_batch(authority, monkeypatch, timeout=60)
+    _foreign_authority, foreign = await _owner(tmp_path / 'b', monkeypatch, own_home=True)
+    peer, worker, _out = _start_batch(authority, monkeypatch, timeout=60)
     rid = await _rid(peer)
     await _draft(owner, rid, 'q0', text='private text', revision=1)
     read_only = await _reconnect(authority, capabilities=['session:read'])
