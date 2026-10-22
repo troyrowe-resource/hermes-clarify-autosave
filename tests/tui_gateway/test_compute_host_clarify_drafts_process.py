@@ -48,7 +48,7 @@ class _Peer:
 @pytest.fixture()
 def hosted(monkeypatch, tmp_path):
     monkeypatch.setattr(host_supervisor, "_HELLO_TIMEOUT_SECS", ANSWERABLE_SECS)
-    import hermes_cli.banner as banner
+    from hermes_cli import banner
     monkeypatch.setattr(banner, "get_update_result", lambda timeout=0.5: None)
     out = tmp_path / "child-out"
     out.mkdir()
