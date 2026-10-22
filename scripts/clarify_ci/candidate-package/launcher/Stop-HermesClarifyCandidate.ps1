@@ -9,9 +9,10 @@
   elsewhere (an installed Hermes, its gateway, its updater, an unrelated program that merely shares a file name)
   are never matched.
 
-  Stopping is never refused and never waits on anyone. The gateway request is a courtesy: it is told --yes and has
-  no stdin (so it cannot prompt), is cut off after -GatewayStopTimeoutSeconds, and any failure of it is reported and
-  ignored; the sweep always runs. It works after a start without the launcher too (no sandbox has to exist).
+  Stopping is never refused and never waits on anyone. The gateway request is a courtesy: it is told --yes and reads
+  its input from NUL, empty and already ended (so it cannot prompt), is cut off after -GatewayStopTimeoutSeconds,
+  and any failure of it is reported and ignored; the sweep always runs. It works after a start without the
+  launcher too (no sandbox has to exist).
   Exit code 1 only when a process of this package is still running afterwards, or the processes could not be
   listed; otherwise 0.
 

@@ -397,13 +397,35 @@ function Close-CandidateWindows {
     return $asked
 }
 
+function New-GatewayStopStartInfo {
+    # How the packaged CLI is started for `gateway stop --yes`: through cmd.exe, with its input taken from NUL. The CLI
+    # then reads an input that has already ended and carries no byte, and can never meet a console nobody can answer.
+    # A pipe made by .NET is not that: Windows PowerShell 5.1 builds its stdin writer from Console.InputEncoding and
+    # flushes it as the process starts, so whenever the console code page is UTF-8 the child's first input is that
+    # encoding's byte-order mark, whatever is done to the pipe afterwards. Output and errors are pipes the caller reads.
+    # cmd's /s rule strips the outer quotes, so the CLI's path is quoted on its own; a percent sign in the path would be
+    # expanded by cmd, which a folder the package was extracted into does not hold.
+    param([string]$Cli, [string]$WorkingDirectory, $Environment)
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = [System.IO.Path]::Combine([System.Environment]::SystemDirectory, 'cmd.exe')
+    $startInfo.Arguments = '/d /s /c ""' + $Cli + '" gateway stop --yes < NUL"'
+    $startInfo.WorkingDirectory = $WorkingDirectory
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.EnvironmentVariables.Clear()
+    foreach ($name in $Environment.Keys) { $startInfo.EnvironmentVariables[$name] = $Environment[$name] }
+    return $startInfo
+}
+
 function Invoke-GatewayStop {
     # `hermes gateway stop` for THIS sandbox, from the packaged CLI with the sandbox's environment, so the gateway the
     # app left running can clean up its lock, state and control pipe the way Hermes itself does. A courtesy: the
-    # sweep that follows is what guarantees the outcome. So it can never get in the way. It cannot prompt (stdin is
-    # closed and --yes answers the live-session question), cannot hang (it is ended after the timeout) and cannot
-    # throw (every failure becomes a line of output). Without a sandbox there is nothing to ask: a start that did not
-    # go through the launcher has no sandbox, and its gateway is ended by the sweep.
+    # sweep that follows is what guarantees the outcome. So it can never get in the way. It cannot prompt (its input is
+    # NUL, see New-GatewayStopStartInfo, and --yes answers the live-session question), cannot hang (it is ended after
+    # the timeout) and cannot throw (every failure becomes a line of output). Without a sandbox there is nothing to
+    # ask: a start that did not go through the launcher has no sandbox, and its gateway is ended by the sweep.
     param([string]$AppDirectory, $Manifest, $Safety, [int]$TimeoutSeconds = 45)
     try {
         if ($Safety.Problem) { Write-Output ('gateway stop skipped: ' + $Safety.Problem); return }
@@ -416,28 +438,18 @@ function Invoke-GatewayStop {
         $cli = Join-Path (Join-Path (Join-Path $AppDirectory 'resources') 'agent-payload') $relative
         if (-not (Test-Path -LiteralPath $cli)) { Write-Output ('gateway stop skipped: the packaged CLI ' + $cli + ' is missing'); return }
         $environment = Get-CandidateEnvironment -Layout $layout -Commit ([string]$Manifest.source.commit)
-        $startInfo = New-Object System.Diagnostics.ProcessStartInfo
-        $startInfo.FileName = $cli
-        $startInfo.Arguments = 'gateway stop --yes'
-        $startInfo.WorkingDirectory = $(if (Test-Path -LiteralPath $layout.temp) { $layout.temp } else { $layout.root })
-        $startInfo.UseShellExecute = $false
-        $startInfo.CreateNoWindow = $true
-        $startInfo.RedirectStandardInput = $true
-        $startInfo.RedirectStandardOutput = $true
-        $startInfo.RedirectStandardError = $true
-        $startInfo.EnvironmentVariables.Clear()
-        foreach ($name in $environment.Keys) { $startInfo.EnvironmentVariables[$name] = $environment[$name] }
-        $stopper = [System.Diagnostics.Process]::Start($startInfo)
+        $workingDirectory = $(if (Test-Path -LiteralPath $layout.temp) { $layout.temp } else { $layout.root })
+        $stopper = [System.Diagnostics.Process]::Start((New-GatewayStopStartInfo -Cli $cli -WorkingDirectory $workingDirectory -Environment $environment))
         try {
-            $stopper.StandardInput.Close()
             $streams = @($stopper.StandardOutput.ReadToEndAsync(), $stopper.StandardError.ReadToEndAsync())
             $finished = $stopper.WaitForExit($TimeoutSeconds * 1000)
             if (-not $finished) {
                 try { $stopper.Kill() } catch { Write-Output ('  could not end it: ' + $_.Exception.Message) }
                 [void]$stopper.WaitForExit(5000)
             }
+            # What a process ended by Kill left behind (a CLI under cmd.exe keeps the pipes open) is the sweep's to end.
             $text = ''
-            foreach ($stream in $streams) { if ($stream.Wait(3000)) { $text += $stream.Result } }
+            foreach ($stream in $streams) { if ($stream.Wait($(if ($finished) { 3000 } else { 500 }))) { $text += $stream.Result } }
             if ($finished) { Write-Output ('gateway stop exited with ' + $stopper.ExitCode) }
             else { Write-Output ('gateway stop did not finish within ' + $TimeoutSeconds + ' s and was ended') }
             foreach ($line in @($text -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -First 8)) { Write-Output ('  ' + $line) }

@@ -74,7 +74,9 @@ jobs:
         shell: powershell
         run: ./scripts/clarify_ci/Test-CandidateLauncher.ps1
 
+      # Always: one shell's failure must not hide the other shell's result.
       - name: Launcher self-test (PowerShell 7)
+        if: always()
         shell: pwsh
         run: ./scripts/clarify_ci/Test-CandidateLauncher.ps1
 

@@ -101,11 +101,22 @@ public static class FakeCli {
         string temp = Environment.GetEnvironmentVariable("TEMP");
         string home = Environment.GetEnvironmentVariable("HERMES_HOME");
         Directory.CreateDirectory(temp);
-        string report = Path.Combine(temp, "fake-cli-report.txt");
-        File.WriteAllText(report, "ARGS=" + string.Join(" ", args) + "\r\nHERMES_HOME=" + home + "\r\n");
-        // A prompt would wait here; Stop closes stdin, so this ends at once.
-        string line = Console.In.ReadLine();
-        File.AppendAllText(report, "STDIN_AT_EOF=" + (line == null) + "\r\n");
+        File.WriteAllText(Path.Combine(temp, "fake-cli-report.txt"),
+            "ARGS=" + string.Join(" ", args) + "\r\nHERMES_HOME=" + home + "\r\nSTDIN_REDIRECTED=" + Console.IsInputRedirected + "\r\n");
+        // Everything a prompt could be waiting on, measured on the raw stream (no text decoding, so a byte-order mark or
+        // any other byte shows up as a count): how many bytes arrive before the input ends, and whether it ends. A
+        // console or an open pipe would block in Read, and the second report would never be written.
+        int bytes = 0;
+        bool ended = false;
+        string error = "none";
+        try {
+            Stream input = Console.OpenStandardInput();
+            byte[] buffer = new byte[256];
+            int read;
+            while ((read = input.Read(buffer, 0, buffer.Length)) > 0) bytes += read;
+            ended = true;
+        } catch (Exception e) { error = e.GetType().Name + ": " + e.Message; }
+        File.WriteAllText(Path.Combine(temp, "fake-cli-stdin.txt"), "STDIN_BYTES=" + bytes + "\r\nSTDIN_AT_EOF=" + ended + "\r\nSTDIN_ERROR=" + error + "\r\n");
         if (File.Exists(Path.Combine(home, "hang-gateway-stop"))) Thread.Sleep(Timeout.Infinite);
         return 0;
     }
@@ -305,21 +316,42 @@ function Get-StopFailure($Run, [string]$Expected) {
     return $null
 }
 $startedRoot = Join-Path $work 'started root'
-Assert-Case 'Stop ends what runs from the package, leaves an unrelated process that shares the executable name alone, and runs gateway stop --yes' {
-    Remove-Item -LiteralPath (Join-Path $startedRoot 'tmp\fake-cli-report.txt') -ErrorAction SilentlyContinue
+Assert-Case 'Stop ends what runs from the package, leaves an unrelated process that shares the executable name alone, and runs gateway stop --yes on an input that has already ended' {
+    foreach ($name in 'fake-cli-report.txt', 'fake-cli-stdin.txt') { Remove-Item -LiteralPath (Join-Path $startedRoot ('tmp\' + $name)) -ErrorAction SilentlyContinue }
     $owned = Start-Sleeper $ownedSleeper
     $decoy = Start-Sleeper $decoySleeper
     try {
         $run = Invoke-Launcher 'Stop-HermesClarifyCandidate.ps1' @('-Root', $startedRoot)
-        $failure = Get-StopFailure $run 'Force-stopped: 1; still running: 0'
+        $failure = Get-StopFailure $run 'gateway stop exited with 0(?s).*Force-stopped: 1; still running: 0'
         if ($failure) { return $failure }
         if (-not $owned.WaitForExit(10000)) { return 'a process that runs from the package was left running' }
         if ($decoy.HasExited) { return 'Stop ended an unrelated process that only shares the executable name' }
-        $report = Get-Content -LiteralPath (Join-Path $startedRoot 'tmp\fake-cli-report.txt')
-        if ($report -notcontains 'ARGS=gateway stop --yes') { return "gateway stop was run as: $($report -join ' | ')" }
-        if ($report -notcontains ('HERMES_HOME=' + (Join-Path $startedRoot 'user-data\hermes-home'))) { return "gateway stop saw another home: $($report -join ' | ')" }
-        if ($report -notcontains 'STDIN_AT_EOF=True') { return 'the gateway request could have waited on input' }
+        $report = @(Get-Content -LiteralPath (Join-Path $startedRoot 'tmp\fake-cli-report.txt'))
+        $stdinLines = @(Get-Content -LiteralPath (Join-Path $startedRoot 'tmp\fake-cli-stdin.txt') -ErrorAction SilentlyContinue)
+        $seen = ($report + $stdinLines) -join ' | '
+        if ($report -notcontains 'ARGS=gateway stop --yes') { return "gateway stop was run as: $seen" }
+        if ($report -notcontains ('HERMES_HOME=' + (Join-Path $startedRoot 'user-data\hermes-home'))) { return "gateway stop saw another home: $seen" }
+        # The CLI must never be able to wait on input: a stream that is not a console, empty, and over at once.
+        if ($report -notcontains 'STDIN_REDIRECTED=True' -or $stdinLines -notcontains 'STDIN_BYTES=0' -or $stdinLines -notcontains 'STDIN_AT_EOF=True' -or $stdinLines -notcontains 'STDIN_ERROR=none') {
+            return "the gateway request's input was not an empty, ended, non-console stream: $seen"
+        }
     } finally { Stop-Sleepers @($owned, $decoy) }
+}
+Assert-Case 'the gateway request reaches a packaged CLI whose path holds spaces, &, parentheses and ^ (cmd quoting)' {
+    $oddApp = Join-Path $work 'odd & (name) ^ app'
+    $oddBin = Join-Path $oddApp 'resources\agent-payload\bin'
+    New-Item -ItemType Directory -Force -Path $oddBin | Out-Null
+    Copy-Item -LiteralPath $fakeCli -Destination (Join-Path $oddBin $exeName)
+    $oddLayout = Get-SandboxLayout (Join-Path $work 'odd sandbox')
+    foreach ($name in 'hermesHome', 'temp') { New-Item -ItemType Directory -Force -Path $oddLayout[$name] | Out-Null }
+    $oddManifest = [pscustomobject]@{
+        source = [pscustomobject]@{ commit = $commit }
+        app    = [pscustomobject]@{ stamp = [pscustomobject]@{ runtime = [pscustomobject]@{ commands = [pscustomobject]@{ hermes = ('bin/' + $exeName) } } } }
+    }
+    $out = (@(Invoke-GatewayStop -AppDirectory $oddApp -Manifest $oddManifest -Safety @{ Layout = $oddLayout; Problem = $null } -TimeoutSeconds 20) -join ' | ')
+    if ($out -notmatch 'gateway stop exited with 0') { return "the request did not run: $out" }
+    $report = @(Get-Content -LiteralPath (Join-Path $oddLayout.temp 'fake-cli-report.txt'))
+    if ($report -notcontains 'ARGS=gateway stop --yes') { return "arguments: $($report -join ' | ')" }
 }
 Assert-Case 'Stop still ends the package when gateway stop never finishes (the request is bounded and then ended)' {
     $marker = Join-Path $startedRoot 'user-data\hermes-home\hang-gateway-stop'
