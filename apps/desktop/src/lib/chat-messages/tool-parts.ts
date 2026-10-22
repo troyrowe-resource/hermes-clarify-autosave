@@ -175,6 +175,47 @@ const projectedResults = new WeakSet<object>()
 const isProjectedResult = (result: unknown): boolean =>
   typeof result === 'object' && result !== null && projectedResults.has(result)
 
+/**
+ * The part a provider tool-call id names: its unfinished call; for a completion also a result this renderer
+ * projected provisionally (replaced in place), else the same completion repeated. `null`: the id names nothing
+ * here, so the caller matches by tool name and arguments.
+ */
+function findStableToolPartIndex(
+  parts: ChatMessagePart[],
+  stableId: string,
+  payload: GatewayEventPayload | undefined,
+  phase: 'running' | 'complete'
+): null | number {
+  const stableIndex = parts.findIndex(
+    part => part.type === 'tool-call' && part.toolCallId === stableId && !Object.hasOwn(part, 'result')
+  )
+
+  if (stableIndex >= 0) {
+    return stableIndex
+  }
+
+  if (phase !== 'complete') {
+    return null
+  }
+
+  const projectedIndex = parts.findIndex(
+    part => part.type === 'tool-call' && part.toolCallId === stableId && isProjectedResult(part.result)
+  )
+
+  if (projectedIndex >= 0) {
+    return projectedIndex
+  }
+
+  const repeatedIndex = parts.findLastIndex(
+    part =>
+      part.type === 'tool-call' &&
+      part.toolCallId === stableId &&
+      (payload?.result === undefined || JSON.stringify(payload.result) === JSON.stringify(part.result))
+  )
+
+  return repeatedIndex >= 0 ? repeatedIndex : null
+}
+
 function findToolPartIndex(
   parts: ChatMessagePart[],
   name: string,
@@ -186,37 +227,10 @@ function findToolPartIndex(
   const overlaps = (index: number) => hasToolMatchOverlap(matchValues, toolPartMatchValues(parts[index]))
 
   if (stableId) {
-    const stableIndex = parts.findIndex(
-      part => part.type === 'tool-call' && part.toolCallId === stableId && !Object.hasOwn(part, 'result')
-    )
+    const stableIndex = findStableToolPartIndex(parts, stableId, payload, phase)
 
-    if (stableIndex >= 0) {
+    if (stableIndex !== null) {
       return stableIndex
-    }
-
-    const projectedIndex =
-      phase === 'complete'
-        ? parts.findIndex(
-            part => part.type === 'tool-call' && part.toolCallId === stableId && isProjectedResult(part.result)
-          )
-        : -1
-
-    if (projectedIndex >= 0) {
-      return projectedIndex
-    }
-
-    const repeatedIndex =
-      phase === 'complete'
-        ? parts.findLastIndex(
-            part =>
-              part.type === 'tool-call' &&
-              part.toolCallId === stableId &&
-              (payload?.result === undefined || JSON.stringify(payload.result) === JSON.stringify(part.result))
-          )
-        : -1
-
-    if (repeatedIndex >= 0) {
-      return repeatedIndex
     }
 
     // Some live streams start without an id, then complete with one. Fall

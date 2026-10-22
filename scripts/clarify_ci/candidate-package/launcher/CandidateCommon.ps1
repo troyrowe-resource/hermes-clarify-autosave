@@ -170,7 +170,7 @@ function Get-CandidatePackage {
     param([string]$PackageRoot, [switch]$SkipHashCheck)
     $manifestPath = Join-Path $PackageRoot 'MANIFEST.json'
     if (-not (Test-Path -LiteralPath $manifestPath)) { Stop-Refused 3 "MANIFEST.json is missing from '$PackageRoot'; this is not an intact candidate package." }
-    $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
+    $manifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $manifestPath | ConvertFrom-Json
     $exe = Join-Path $PackageRoot (($manifest.app.exe) -replace '/', '\')
     if (-not (Test-Path -LiteralPath $exe)) { Stop-Refused 3 "the product executable '$exe' named by MANIFEST.json is missing." }
     if (-not $SkipHashCheck) {
@@ -179,7 +179,7 @@ function Get-CandidatePackage {
     }
     $stampPath = Join-Path (Split-Path -Parent $exe) 'resources\install-stamp.json'
     if (-not (Test-Path -LiteralPath $stampPath)) { Stop-Refused 4 "'$stampPath' is missing; this is not a bundled candidate build." }
-    $stamp = Get-Content -Raw -LiteralPath $stampPath | ConvertFrom-Json
+    $stamp = Get-Content -Raw -Encoding UTF8 -LiteralPath $stampPath | ConvertFrom-Json
     $required = @(@('source', 'commit-build'), @('updateMechanism', 'external'), @('payload', 'bundled'), @('commit', [string]$manifest.source.commit))
     foreach ($pair in $required) {
         $property = $stamp.PSObject.Properties[$pair[0]]

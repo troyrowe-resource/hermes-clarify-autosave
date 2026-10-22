@@ -13,6 +13,8 @@
  *     supersede the drafts on the server and on this device.
  *  3. Edits made while the connection is down are reported truthfully (never as saved), are not lost when
  *     the connection returns, and reach the server without the user typing again.
+ *  4. The same for a whole draft whose very first edit is made while the connection is down (the server holds
+ *     nothing yet to replay).
  */
 
 import { MIXED_CLARIFY_TRIGGER } from '../../../tests-js/scripts/mock-server'
@@ -61,6 +63,8 @@ let link: Awaited<ReturnType<typeof interceptGatewaySocket>>
 const observations: Record<string, unknown> = { timeoutSeconds: CLARIFY_TIMEOUT_SECONDS }
 
 test.beforeAll(async () => {
+  // Booting the app on a cold CI runner outlasts the 90 s default test timeout.
+  test.setTimeout(300_000)
   fixture = await setupMockBackend({ extraConfig: clarifyTimeoutConfig(CLARIFY_TIMEOUT_SECONDS) })
   await waitForAppReady(fixture!, 120_000)
 
@@ -72,6 +76,7 @@ test.beforeAll(async () => {
 })
 
 test.afterAll(async () => {
+  test.setTimeout(120_000)
   writeObservations('native-reconnect-observations.json', observations)
   await fixture?.cleanup()
   fixture = null

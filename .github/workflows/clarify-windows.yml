@@ -1,16 +1,34 @@
-name: Clarify drafts - Windows native evidence
+name: Clarify drafts - Windows candidate pipeline
 
-# Manual seed workflow for this public build/test repository: build the Desktop
-# app from source and run the clarify-draft Python contract tests plus the one
-# native Windows Playwright spec (e2e/clarify-drafts-native.spec.ts) against a
-# synthetic model server. It produces evidence only. It does not package, sign,
-# install or publish anything; a user-ready Windows package is later work.
+# Manual workflow for this public build/test repository. It proves the clarify-draft autosave on real Windows in
+# four bounded jobs, each on a standard windows-2025 x64 runner, and publishes nothing:
 #
-# Candidate branch candidate/clarify-autosave-windows runs this first unchanged as
-# a Windows environment baseline; later candidate commits extend it.
+#   launcher  the shipped isolating launcher's self-test (Windows PowerShell 5.1 and PowerShell 7)
+#   native    Desktop built from source; every clarify-draft Python test; every native Playwright spec
+#             (apps/desktop/e2e/clarify-drafts-native*.spec.ts), one worker, no retries
+#   package   (only when native AND launcher passed) the unsigned one-commit BUNDLED candidate: the Desktop app plus
+#             the Python runtime, dependencies and this commit's source it starts, zipped with the launcher and a
+#             MANIFEST.json. electron-builder runs with --publish never; no signing credential exists here
+#   accept    downloads the uploaded zip, checks its digest against the build job's and every file against
+#             MANIFEST.json, extracts it, and runs apps/desktop/e2e/clarify-drafts-packaged.spec.ts against the
+#             executable inside it, started through the shipped Start-HermesClarifyCandidate.cmd
+#
+# Evidence stays private for 7 days: clarify-windows-* (native), clarify-candidate-* (the zip, MANIFEST.json,
+# SHA256SUMS.txt), clarify-package-evidence-*, clarify-acceptance-*. A green run on a clean GitHub runner is not
+# proof for any other machine; the acceptance verdict says exactly what it covers.
 
 on:
   workflow_dispatch:
+    inputs:
+      stage:
+        description: >-
+          all: native acceptance, then, only if it passed, the packaged candidate and its acceptance.
+          native: the native acceptance (and the launcher self-test) only.
+        type: choice
+        options:
+          - all
+          - native
+        default: all
 
 permissions:
   contents: read
@@ -25,17 +43,39 @@ defaults:
   run:
     shell: bash
 
+env:
+  # No provider credential may reach a test; the fixtures also strip them.
+  OPENROUTER_API_KEY: ''
+  OPENAI_API_KEY: ''
+  NOUS_API_KEY: ''
+  ANTHROPIC_API_KEY: ''
+  PYTHONUTF8: '1'
+
 jobs:
+  launcher:
+    name: Candidate launcher self-test (windows-2025 x64)
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The shell Start-HermesClarifyCandidate.cmd uses. The self-test lays the shipped launcher beside a fake
+      # package inside a temp directory it owns and never touches a real Hermes location.
+      - name: Launcher self-test (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./scripts/clarify_ci/Test-CandidateLauncher.ps1
+
+      - name: Launcher self-test (PowerShell 7)
+        shell: pwsh
+        run: ./scripts/clarify_ci/Test-CandidateLauncher.ps1
+
   native:
     name: Desktop build + clarify drafts native E2E (windows-2025 x64)
     runs-on: windows-2025
     timeout-minutes: 60
-    env:
-      # No provider credential may reach a test; the fixtures also strip them.
-      OPENROUTER_API_KEY: ''
-      OPENAI_API_KEY: ''
-      NOUS_API_KEY: ''
-      ANTHROPIC_API_KEY: ''
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -72,8 +112,14 @@ jobs:
             --set "pm.python=$PM_PYTHON" --set "pm.uv=$PM_UV" --set "pm.node=$PM_NODE" \
             --set "pm.npm=$PM_NPM" --set "pm.target=$PM_TARGET"
 
+      - name: Record runner facts
+        if: always()
+        continue-on-error: true
+        shell: pwsh
+        run: ./scripts/clarify_ci/Get-RunnerFacts.ps1 -Out "$env:CLARIFY_EVIDENCE/metadata/runner-facts.json"
+
       # Full npm ci (not --ignore-scripts): electron's postinstall downloads the
-      # binary the spec launches. Only this dependency install is retried.
+      # binary the specs launch. Only this dependency install is retried.
       - name: Install npm workspaces (npm ci)
         uses: ./.github/actions/retry
         with:
@@ -85,16 +131,20 @@ jobs:
         timeout-minutes: 15
         run: npm run build
 
+      # The listed files are the baseline gate. select_tests.py adds every other tests/**/test_*clarify*draft*.py,
+      # so a draft test a later commit introduces cannot be left out of the gate by forgetting to list it.
       - name: Clarify draft and contract Python tests
         id: python
         if: always() && steps.pm.outcome == 'success'
-        timeout-minutes: 20
+        timeout-minutes: 25
         env:
           HERMES_TEST_FILE_RETRIES: '0'
         run: |
           set -euo pipefail
           mkdir -p "$CLARIFY_EVIDENCE/python"
-          scripts/run_tests.sh \
+          # A failed selection must fail the step (an empty list would run the whole suite), and a Windows
+          # interpreter's CRLF must not end up inside the file names.
+          python -S scripts/clarify_ci/select_tests.py \
             tests/gateway/test_clarify_drafts_owner.py \
             tests/tools/test_clarify_drafts_store.py \
             tests/tools/test_clarify_tool_drafts.py \
@@ -112,7 +162,13 @@ jobs:
             tests/tui_gateway/test_session_delete_rpc.py \
             tests/tui_gateway/contracts/test_generated.py \
             scripts/clarify_ci/test_evidence.py \
-            -q 2>&1 | tee "$CLARIFY_EVIDENCE/python/run_tests.log"
+            scripts/clarify_ci/test_candidate.py \
+            scripts/clarify_ci/test_select_tests.py \
+            | tr -d '\r' > "$CLARIFY_EVIDENCE/python/selected-tests.txt"
+          mapfile -t tests < "$CLARIFY_EVIDENCE/python/selected-tests.txt"
+          test "${#tests[@]}" -gt 0
+          echo "running ${#tests[@]} test file(s)"
+          scripts/run_tests.sh "${tests[@]}" -q 2>&1 | tee "$CLARIFY_EVIDENCE/python/run_tests.log"
 
       - name: Generated gateway contracts are current
         id: contracts
@@ -131,15 +187,15 @@ jobs:
           python -S scripts/clarify_ci/evidence.py sentinels --out "$CLARIFY_EVIDENCE/isolation/before.json"
           python -S scripts/clarify_ci/evidence.py stage "$CLARIFY_EVIDENCE/native"
 
-      # One worker and --retries=0: CI=true would otherwise give the root config
-      # one hidden retry. The fixture supplies the sandbox HERMES_HOME, user data,
-      # IGNORE_EXISTING, ISOLATED_BACKEND, HERMES_ROOT, unique APP_NAME and
-      # SKIP_PROTOCOL_REGISTRATION; the mock server is the only model.
-      - name: Native Windows Playwright - clarify drafts survive a real timeout
+      # Every native spec, one worker, --retries=0: CI=true would otherwise give the root config one hidden retry.
+      # The fixture supplies the sandbox HERMES_HOME, user data (and the --user-data-dir switch), IGNORE_EXISTING,
+      # ISOLATED_BACKEND, HERMES_ROOT, unique APP_NAME and SKIP_PROTOCOL_REGISTRATION; the mock server is the only
+      # model. Specs are found by glob, the same glob `evidence.py verify` expands, so none can be left out.
+      - name: Native Windows Playwright - clarify drafts (every native spec)
         id: native
         if: always() && steps.preflight.outcome == 'success'
         working-directory: apps/desktop
-        timeout-minutes: 15
+        timeout-minutes: 35
         env:
           CI: 'true'
           HERMES_DESKTOP_PYTHON: ${{ steps.pm.outputs.python-path }}
@@ -147,7 +203,11 @@ jobs:
         run: |
           set -euo pipefail
           "$HERMES_DESKTOP_PYTHON" -S -c "import sys; print('backend interpreter:', sys.executable)"
-          npx --no playwright test e2e/clarify-drafts-native.spec.ts --workers=1 --retries=0
+          shopt -s nullglob
+          specs=(e2e/clarify-drafts-native*.spec.ts)
+          if [ "${#specs[@]}" -eq 0 ]; then echo "::error::no e2e/clarify-drafts-native*.spec.ts found"; exit 1; fi
+          printf 'native spec: %s\n' "${specs[@]}"
+          npx --no playwright test "${specs[@]}" --workers=1 --retries=0
 
       - name: No real-install location was touched
         id: isolation
@@ -198,3 +258,432 @@ jobs:
             --outcome "native-e2e=${{ steps.native.outcome }}" \
             --outcome "isolation-after=${{ steps.isolation.outcome }}" \
             --outcome "native-evidence=${{ steps.verify.outcome }}"
+
+  package:
+    name: Unsigned Windows candidate package (windows-2025 x64)
+    needs: [native, launcher]
+    if: ${{ inputs.stage != 'native' }}
+    runs-on: windows-2025
+    timeout-minutes: 60
+    outputs:
+      package: ${{ steps.manifest.outputs.package }}
+      zip_name: ${{ steps.manifest.outputs.zip_name }}
+      zip_sha256: ${{ steps.manifest.outputs.zip_sha256 }}
+      exe_sha256: ${{ steps.manifest.outputs.exe_sha256 }}
+      artifact: ${{ steps.manifest.outputs.artifact }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Name the roots and the baked runtime defaults
+        run: |
+          set -euo pipefail
+          temp="$RUNNER_TEMP"
+          if command -v cygpath >/dev/null; then temp="$(cygpath -m "$RUNNER_TEMP")"; fi
+          {
+            echo "CLARIFY_EVIDENCE=$temp/clarify-package-evidence"
+            echo "CLARIFY_ARTIFACT=$temp/clarify-package-artifact"
+            echo "CANDIDATE_OUT=$temp/clarify-candidate"
+            # What a start WITHOUT the launcher must not be able to reach: the app gets a data directory of its own
+            # and no inherited or registry HERMES_HOME (apps/desktop/BUILDING.md, HERMES_BUNDLE_ENV_JSON).
+            echo "HERMES_BUNDLE_ENV_JSON=$(python -S scripts/clarify_ci/candidate.py bundle-env | tr -d '\r')"
+          } >> "$GITHUB_ENV"
+
+      - name: Record source and run metadata
+        if: always()
+        run: python -S scripts/clarify_ci/evidence.py metadata --out "$CLARIFY_EVIDENCE/metadata/run.json" --set "build.variant=bundled"
+
+      # Runner-local speed-up only (the same step the upstream release builds run); the VM is discarded afterwards.
+      - name: Exclude build paths from Defender scanning
+        shell: pwsh
+        run: |
+          foreach ($path in @('C:\hsb', $env:RUNNER_TEMP, $env:GITHUB_WORKSPACE)) {
+            try { Add-MpPreference -ExclusionPath $path; Write-Host "Defender exclusion added for $path" }
+            catch { Write-Host "Defender exclusion not applied for $path ($($_.Exception.Message)); continuing" }
+          }
+          try { Set-MpPreference -DisableRealtimeMonitoring $true; Write-Host 'Defender real-time monitoring disabled for this build job' }
+          catch { Write-Host "Could not disable Defender real-time monitoring ($($_.Exception.Message)); continuing" }
+
+      - name: Record runner facts before the build
+        continue-on-error: true
+        shell: pwsh
+        run: ./scripts/clarify_ci/Get-RunnerFacts.ps1 -Out "$env:CLARIFY_EVIDENCE/runner-facts-before.json"
+
+      # The build wants a short path (Windows path limits while packaging) and room for several gigabytes, and a
+      # hosted runner's workspace drive is the small one (runner-facts-*.json record the real numbers), so the exact
+      # commit is cloned to C:\hsb. The workspace checkout is shallow and clean, and so is the clone.
+      - name: Clone the exact commit to a short path on the system drive
+        id: clone
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git clone --no-hardlinks --quiet "$GITHUB_WORKSPACE" /c/hsb
+          test "$(git -C /c/hsb rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git -C /c/hsb status --porcelain --untracked-files=all)"
+          echo "building $GITHUB_SHA from C:\\hsb"
+
+      - name: Restore desktop dependency inputs
+        id: build-cache
+        uses: ./.github/actions/desktop-build-cache
+        with:
+          phase: restore
+          source: C:/hsb
+          work: C:/hsb/.build/desktop-job
+          cache: C:/hsb/.cache/desktop-inputs
+          producer: desktop
+
+      - name: Prepare the complete desktop build (one-commit bundled variant)
+        id: prepare
+        working-directory: C:/hsb
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          python scripts/bundles/desktop.py --commit "$GITHUB_SHA" --variant bundled --prepare-only \
+            --work C:/hsb/.build/desktop-job --cache C:/hsb/.cache/desktop-inputs
+          python -m scripts.ci.desktop_commands C:/hsb/.build/desktop-job/prepared.json
+
+      # Before the build, so a build that runs out of time still leaves a warm cache for the next dispatch.
+      - name: Save dependency inputs before building
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        uses: ./.github/actions/desktop-build-cache
+        with:
+          phase: save
+          source: C:/hsb
+          work: C:/hsb/.build/desktop-job
+          cache: C:/hsb/.cache/desktop-inputs
+          producer: desktop
+          key: ${{ steps.build-cache.outputs.cache-key }}
+
+      # The builder gets the prepared inputs only; electron-builder is told --publish never explicitly (the driver
+      # adds it too). The signing variables are blank on purpose: the output is unsigned and says so.
+      - name: Build the unsigned Windows app (electron-builder, publishing never)
+        id: build
+        working-directory: C:/hsb
+        timeout-minutes: 22
+        env:
+          AZURE_SIGN_ENDPOINT: ''
+          AZURE_SIGN_ACCOUNT: ''
+          AZURE_SIGN_PROFILE: ''
+          AZURE_SIGN_PUBLISHER: ''
+          AZURE_CLIENT_ID: ''
+          AZURE_TENANT_ID: ''
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: |
+          set -euo pipefail
+          python scripts/bundles/desktop.py --prepared C:/hsb/.build/desktop-job/prepared.json --variant bundled -- --publish never
+
+      - name: Locate the unpacked app
+        id: locate
+        run: python -S scripts/clarify_ci/candidate.py locate --release-dir C:/hsb/apps/desktop/release --commit "$GITHUB_SHA" --github-output
+
+      - name: Record runner facts after the build
+        if: always()
+        continue-on-error: true
+        shell: pwsh
+        run: ./scripts/clarify_ci/Get-RunnerFacts.ps1 -Out "$env:CLARIFY_EVIDENCE/runner-facts-after.json"
+
+      - name: Record the executable's Authenticode state
+        id: authenticode
+        shell: pwsh
+        env:
+          UNPACKED: ${{ steps.locate.outputs.unpacked }}
+        run: |
+          $exe = Join-Path $env:UNPACKED ('hermes-' + $env:GITHUB_SHA.Substring(0, 7) + '.exe')
+          $signature = Get-AuthenticodeSignature -LiteralPath $exe
+          $subject = if ($signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { $null }
+          $record = [ordered]@{ status = [string]$signature.Status; subject = $subject }
+          New-Item -ItemType Directory -Force -Path $env:CLARIFY_EVIDENCE | Out-Null
+          $record | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $env:CLARIFY_EVIDENCE 'authenticode.json') -Encoding UTF8
+          $record | ConvertTo-Json
+
+      - name: Audit the unpacked app is the bundled one-commit build
+        id: audit
+        env:
+          UNPACKED: ${{ steps.locate.outputs.unpacked }}
+        run: |
+          python -S scripts/clarify_ci/candidate.py audit --app "$UNPACKED" --commit "$GITHUB_SHA" \
+            --authenticode "$CLARIFY_EVIDENCE/authenticode.json" --out "$CLARIFY_EVIDENCE/candidate-audit.json"
+
+      - name: Assemble the candidate zip, MANIFEST.json and SHA256SUMS.txt
+        id: assemble
+        env:
+          UNPACKED: ${{ steps.locate.outputs.unpacked }}
+        run: |
+          python -S scripts/clarify_ci/candidate.py assemble --app "$UNPACKED" --commit "$GITHUB_SHA" \
+            --template scripts/clarify_ci/candidate-package --out-dir "$CANDIDATE_OUT" --max-zip-mb 3072 \
+            --provenance source-provenance.json --authenticode "$CLARIFY_EVIDENCE/authenticode.json"
+          ls -l "$CANDIDATE_OUT"
+
+      - name: Read back what was assembled
+        id: manifest
+        run: python -S scripts/clarify_ci/candidate.py outputs --manifest "$CANDIDATE_OUT/MANIFEST.json"
+
+      # The zip is already deflated, so the artifact container stores it as is (compression-level 0).
+      - name: Upload the candidate (zip, MANIFEST.json, SHA256SUMS.txt)
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.manifest.outputs.artifact }}
+          path: ${{ env.CANDIDATE_OUT }}
+          retention-days: 7
+          compression-level: 0
+          if-no-files-found: error
+          include-hidden-files: false
+
+      - name: Collect bounded package evidence
+        if: always()
+        run: |
+          python -S scripts/clarify_ci/evidence.py collect --dest "$CLARIFY_ARTIFACT" \
+            --source "evidence=$CLARIFY_EVIDENCE" \
+            --source "prepared-request=C:/hsb/.build/desktop-job/prepared.json" \
+            --source "manifest=$CANDIDATE_OUT/MANIFEST.json" \
+            --source "sha256sums=$CANDIDATE_OUT/SHA256SUMS.txt"
+
+      - name: Upload package evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: clarify-package-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.CLARIFY_ARTIFACT }}
+          retention-days: 7
+          if-no-files-found: error
+          include-hidden-files: false
+
+      - name: Package gate and summary
+        if: always()
+        env:
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+          ZIP_NAME: ${{ steps.manifest.outputs.zip_name }}
+          ZIP_SHA256: ${{ steps.manifest.outputs.zip_sha256 }}
+        run: |
+          python -S scripts/clarify_ci/evidence.py gate \
+            --title "Clarify drafts: unsigned Windows candidate package" \
+            --note "Unsigned, private, never published: ${ZIP_NAME:-no archive} sha256 ${ZIP_SHA256:-none} (artifact digest ${ARTIFACT_DIGEST:-none}). Acceptance of these bytes is the next job." \
+            --verify "$CLARIFY_EVIDENCE/candidate-audit.json" \
+            --outcome "clone=${{ steps.clone.outcome }}" \
+            --outcome "prepare=${{ steps.prepare.outcome }}" \
+            --outcome "build=${{ steps.build.outcome }}" \
+            --outcome "locate=${{ steps.locate.outcome }}" \
+            --outcome "authenticode=${{ steps.authenticode.outcome }}" \
+            --outcome "audit=${{ steps.audit.outcome }}" \
+            --outcome "assemble=${{ steps.assemble.outcome }}" \
+            --outcome "upload=${{ steps.upload.outcome }}"
+
+  accept:
+    name: Packaged-bytes acceptance (windows-2025 x64)
+    needs: [package]
+    runs-on: windows-2025
+    timeout-minutes: 50
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Name the roots
+        env:
+          PACKAGE: ${{ needs.package.outputs.package }}
+        run: |
+          set -euo pipefail
+          temp="$RUNNER_TEMP"
+          if command -v cygpath >/dev/null; then temp="$(cygpath -m "$RUNNER_TEMP")"; fi
+          {
+            echo "CLARIFY_EVIDENCE=$temp/clarify-acceptance-evidence"
+            echo "CLARIFY_ARTIFACT=$temp/clarify-acceptance-artifact"
+            echo "CANDIDATE_IN=$temp/clarify-candidate-download"
+            # A short extraction path: the packaged runtime has deep directory trees.
+            echo "CANDIDATE_EXTRACT=C:/hsa"
+            echo "CANDIDATE_DIR=C:/hsa/$PACKAGE"
+            echo "DECOY_HOME=$temp/decoy-hermes-home"
+          } >> "$GITHUB_ENV"
+
+      - name: Record source and run metadata
+        if: always()
+        run: python -S scripts/clarify_ci/evidence.py metadata --out "$CLARIFY_EVIDENCE/metadata/run.json" --set "package=${{ needs.package.outputs.package }}"
+
+      # Defender is left ON here, as on a person's machine: extraction and the first start are slower, and a
+      # quarantine of anything in the payload would be a real finding.
+      - name: Record runner facts
+        continue-on-error: true
+        shell: pwsh
+        run: ./scripts/clarify_ci/Get-RunnerFacts.ps1 -Out "$env:CLARIFY_EVIDENCE/runner-facts.json"
+
+      # Node and npm only: the packaged executable brings its own Python and Electron, and nothing of the locked
+      # Python test environment exists here for the candidate to find.
+      - name: Prepare locked Node toolchain
+        id: pm
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: node
+          archive-inputs: 'false'
+
+      # The harness never launches a dev Electron, so its binary is not downloaded (the dev fixtures are unused).
+      - name: Install npm workspaces (npm ci)
+        id: npm
+        uses: ./.github/actions/retry
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+        with:
+          command: npm ci
+
+      - name: Download the candidate artifact
+        id: download
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.package.outputs.artifact }}
+          path: ${{ env.CANDIDATE_IN }}
+
+      # The archive's digest must equal the one the BUILD job reported through a different route than the artifact,
+      # every file must equal MANIFEST.json's list, and the commit must be the one this run is for.
+      - name: Verify the downloaded archive against its manifest and extract it
+        id: verify-package
+        env:
+          ZIP_NAME: ${{ needs.package.outputs.zip_name }}
+          ZIP_SHA256: ${{ needs.package.outputs.zip_sha256 }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$CLARIFY_EVIDENCE"
+          python -S scripts/clarify_ci/candidate.py verify \
+            --zip "$CANDIDATE_IN/$ZIP_NAME" --manifest "$CANDIDATE_IN/MANIFEST.json" \
+            --extract-to "$CANDIDATE_EXTRACT" --commit "$GITHUB_SHA" --expect-sha256 "$ZIP_SHA256" \
+            --out "$CLARIFY_EVIDENCE/archive-verify.json"
+
+      - name: Isolation preflight and evidence staging
+        id: preflight
+        if: always() && steps.verify-package.outcome == 'success'
+        run: |
+          set -euo pipefail
+          python -S scripts/clarify_ci/evidence.py sentinels --out "$CLARIFY_EVIDENCE/isolation/before.json" \
+            --informational LOCALAPPDATA/HermesClarifyCandidate \
+            --watch 'APPDATA/Hermes*' --watch 'LOCALAPPDATA/hermes-*' --watch 'USERPROFILE/.hermes*'
+          python -S scripts/clarify_ci/evidence.py stage "$CLARIFY_EVIDENCE/packaged"
+
+      # The executable inside the extracted zip, started through the shipped Start-HermesClarifyCandidate.cmd. The
+      # decoy variables below, if they reached the candidate, would point it at this checkout, another Python or a
+      # different Hermes home; the spec proves they did not, and that the decoy home was never created.
+      - name: Packaged Playwright - the candidate keeps clarify drafts through a real timeout
+        id: packaged
+        if: always() && steps.preflight.outcome == 'success' && steps.npm.outcome == 'success'
+        working-directory: apps/desktop
+        timeout-minutes: 30
+        env:
+          CI: 'true'
+          HERMES_E2E_REQUIRE_PACKAGED: '1'
+          HERMES_E2E_CANDIDATE_DIR: ${{ env.CANDIDATE_DIR }}
+          HERMES_E2E_EXPECT_COMMIT: ${{ github.sha }}
+          HERMES_E2E_EVIDENCE_DIR: ${{ env.CLARIFY_EVIDENCE }}/packaged
+          HERMES_E2E_DECOY_VARIABLES: HERMES_DESKTOP_HERMES_ROOT,HERMES_DESKTOP_PYTHON,PYTHONPATH
+          HERMES_E2E_DECOY_HOME: ${{ env.DECOY_HOME }}
+          HERMES_HOME: ${{ env.DECOY_HOME }}
+          HERMES_DESKTOP_HERMES_ROOT: ${{ github.workspace }}
+          HERMES_DESKTOP_PYTHON: python
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          test -f "$CANDIDATE_DIR/MANIFEST.json"
+          npx --no playwright test e2e/clarify-drafts-packaged.spec.ts --workers=1 --retries=0
+
+      # The safety net: the gateway the app starts outlives it, and a failed run may not have reached the spec's own
+      # stop. The same shipped script, in the shell its .cmd uses; with nothing running it must still exit 0.
+      - name: Stop the candidate and its background gateway
+        id: stop
+        if: always() && steps.verify-package.outcome == 'success'
+        shell: powershell
+        run: |
+          & (Join-Path $env:CANDIDATE_DIR 'launcher\Stop-HermesClarifyCandidate.ps1')
+          exit $LASTEXITCODE
+
+      - name: No real-install location was touched
+        id: isolation
+        if: always() && steps.preflight.outcome == 'success'
+        run: |
+          set -euo pipefail
+          python -S scripts/clarify_ci/evidence.py sentinels --out "$CLARIFY_EVIDENCE/isolation/after.json" \
+            --informational LOCALAPPDATA/HermesClarifyCandidate \
+            --watch 'APPDATA/Hermes*' --watch 'LOCALAPPDATA/hermes-*' --watch 'USERPROFILE/.hermes*'
+          python -S scripts/clarify_ci/evidence.py isolation --label packaged \
+            --before "$CLARIFY_EVIDENCE/isolation/before.json" --after "$CLARIFY_EVIDENCE/isolation/after.json"
+
+      - name: Verify packaged evidence is complete
+        id: evidence
+        if: always() && steps.preflight.outcome == 'success'
+        run: |
+          python -S scripts/clarify_ci/evidence.py verify --label packaged \
+            --spec clarify-drafts-packaged.spec.ts \
+            --evidence "$CLARIFY_EVIDENCE/packaged" \
+            --results apps/desktop/playwright-report/results.json \
+            --expect-observation "packaged:completed=true" \
+            --expect-observation "packaged:identity.commit=$GITHUB_SHA" \
+            --expect-observation "packaged:identity.isPackaged=true" \
+            --expect-observation "packaged:identity.execPathIsPackagedExe=true" \
+            --expect-observation "packaged:identity.exeSha256Matches=true" \
+            --expect-observation "packaged:identity.bakedHermesHomeClearActive=true" \
+            --expect-observation "packaged:isolation.contractProblems=0" \
+            --expect-observation "packaged:isolation.userDataIsSandbox=true" \
+            --expect-observation "packaged:isolation.hermesHomeIsSandbox=true" \
+            --expect-observation "packaged:isolation.decoyHomeUntouched=true" \
+            --expect-observation "packaged:backend.executableInsidePayload=true" \
+            --expect-observation "packaged:backend.foreignProcesses=0" \
+            --expect-observation "packaged:scenario.serverConfirmedSave=true" \
+            --expect-observation "packaged:scenario.draftsAreNotAnswers=true" \
+            --expect-observation "packaged:scenario.recalledFromServer=true" \
+            --expect-observation "packaged:scenario.modelToldUnsubmitted=true" \
+            --expect-observation "packaged:teardown.stopExitCode=0" \
+            --expect-observation "packaged:teardown.processesLeft=0" \
+            --out "$CLARIFY_EVIDENCE/packaged-verdict.json"
+
+      - name: Acceptance verdict for exactly these bytes
+        id: verdict
+        if: always() && steps.verify-package.outcome == 'success' && steps.evidence.outcome != 'skipped'
+        run: |
+          python -S scripts/clarify_ci/candidate.py verdict \
+            --manifest "$CANDIDATE_IN/MANIFEST.json" \
+            --archive-verify "$CLARIFY_EVIDENCE/archive-verify.json" \
+            --evidence-verdict "$CLARIFY_EVIDENCE/packaged-verdict.json" \
+            --outcome "packaged-e2e=${{ steps.packaged.outcome }}" \
+            --outcome "stop=${{ steps.stop.outcome }}" \
+            --outcome "isolation=${{ steps.isolation.outcome }}" \
+            --outcome "packaged-evidence=${{ steps.evidence.outcome }}" \
+            --out "$CLARIFY_EVIDENCE/acceptance-verdict.json"
+
+      - name: Collect bounded evidence
+        if: always()
+        run: |
+          python -S scripts/clarify_ci/evidence.py collect --dest "$CLARIFY_ARTIFACT" \
+            --source "evidence=$CLARIFY_EVIDENCE" \
+            --source "playwright-results=apps/desktop/playwright-report/results.json" \
+            --source "test-results=apps/desktop/test-results" \
+            --source "manifest=$CANDIDATE_IN/MANIFEST.json"
+
+      - name: Upload acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: clarify-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.CLARIFY_ARTIFACT }}
+          retention-days: 7
+          if-no-files-found: error
+          include-hidden-files: false
+
+      - name: Acceptance gate and summary
+        if: always()
+        env:
+          ZIP_NAME: ${{ needs.package.outputs.zip_name }}
+          ZIP_SHA256: ${{ needs.package.outputs.zip_sha256 }}
+        run: |
+          python -S scripts/clarify_ci/evidence.py gate \
+            --title "Clarify drafts: packaged-bytes acceptance (unsigned Windows candidate)" \
+            --note "Acceptance of ${ZIP_NAME:-no archive} sha256 ${ZIP_SHA256:-none}, extracted from the uploaded artifact on a clean GitHub-hosted windows-2025 x64 runner. Unsigned, private, never published. It does not show the candidate works on any other machine, with a real provider or server, or beside an installed Hermes." \
+            --verify "$CLARIFY_EVIDENCE/packaged-verdict.json" \
+            --outcome "setup-node=${{ steps.pm.outcome }}" \
+            --outcome "npm-ci=${{ steps.npm.outcome }}" \
+            --outcome "download=${{ steps.download.outcome }}" \
+            --outcome "verify-package=${{ steps.verify-package.outcome }}" \
+            --outcome "isolation-preflight=${{ steps.preflight.outcome }}" \
+            --outcome "packaged-e2e=${{ steps.packaged.outcome }}" \
+            --outcome "stop=${{ steps.stop.outcome }}" \
+            --outcome "isolation-after=${{ steps.isolation.outcome }}" \
+            --outcome "packaged-evidence=${{ steps.evidence.outcome }}" \
+            --outcome "acceptance-verdict=${{ steps.verdict.outcome }}"

@@ -57,6 +57,8 @@ let fixture: MockBackendFixture | null = null
 const observations: Record<string, unknown> = { timeoutSeconds: CLARIFY_TIMEOUT_SECONDS }
 
 test.beforeAll(async () => {
+  // Booting the app on a cold CI runner outlasts the 90 s default test timeout.
+  test.setTimeout(300_000)
   fixture = await setupMockBackend({ extraConfig: clarifyTimeoutConfig(CLARIFY_TIMEOUT_SECONDS) })
   await waitForAppReady(fixture!, 120_000)
   // A file where the store's directory must go: creating the directory fails on every platform.
@@ -64,6 +66,7 @@ test.beforeAll(async () => {
 })
 
 test.afterAll(async () => {
+  test.setTimeout(120_000)
   writeObservations('native-failure-observations.json', observations)
   await fixture?.cleanup()
   fixture = null
@@ -157,6 +160,8 @@ test.describe('clarify drafts (native, failed persistence)', () => {
       }
     }, DEVICE_KEY_PREFIX)
 
+    // The first test's device copy is still there; nothing may be added to it or changed in it.
+    const before = await deviceDraftEntries(page)
     await newSession(page)
     const form = await draftSomething(page, 'both-fail')
 
@@ -169,7 +174,7 @@ test.describe('clarify drafts (native, failed persistence)', () => {
       'Not saved: this device could not store your latest changes and the server has not confirmed them. Copy your text before the form closes.'
     )
     expect(serverDraftRecords(fixture!.sandbox.hermesHome)).toEqual([])
-    expect(await deviceDraftEntries(page)).toEqual([])
+    expect(await deviceDraftEntries(page), 'this device stored nothing new').toEqual(before)
     await expect(textField(form, 2)).toHaveValue(TEXT)
     await shot(page, 'native-failure-03-both-fail-live.png')
 
@@ -192,13 +197,14 @@ test.describe('clarify drafts (native, failed persistence)', () => {
     // The server's disk works again (the blocking file is gone); the device refusal from the last test stays.
     fs.rmSync(BLOCKER(sandbox.hermesHome), { force: true })
 
+    const before = await deviceDraftEntries(page)
     await newSession(page)
     const form = await draftSomething(page, 'device-fails')
 
     await waitForDraftState(form, 'server-only')
     const live = await readDraftStatus(form)
     expect(live.text).toBe('Draft saved on the server only: this device could not store a copy')
-    expect(await deviceDraftEntries(page)).toEqual([])
+    expect(await deviceDraftEntries(page), 'this device stored nothing new').toEqual(before)
 
     const [stored] = await waitForServerRecords(sandbox.hermesHome, 1)
     expect(stored.record.drafts.q2.text).toBe(TEXT)

@@ -38,6 +38,12 @@ It starts with no provider configured. Add one inside the candidate, or connect
 it to a server, exactly as you would a fresh Hermes. Nothing is copied from
 your real Hermes.
 
+Do not start app\@EXE_NAME@ directly. It keeps its own data folders (home
+%LOCALAPPDATA%\hermes-clarify-candidate), cannot update itself and never reads
+an exported or saved HERMES_HOME, but a direct start re-points the hermes://
+link handler of an installed Hermes at the candidate, which only the launcher
+prevents.
+
 STOP
 ----
 Closing the window leaves the candidate's background gateway running (Hermes
@@ -63,9 +69,11 @@ Properties, Unblock) before extracting, then start through the .cmd file.
 
 REQUIREMENTS
 ------------
-Windows 10 or 11 on x64. No Python, Node, Git or Hermes install is needed: the
-runtime ships under app\resources\agent-payload. Free disk of about twice the zip
-size. Network only for what you configure.
+Windows on x64. It was started only on a Windows Server 2025 runner (build
+26100); the project's own installer floor is Windows 11 22H2 and nothing older
+was tried. No Python, Node, Git or Hermes install is needed: the runtime ships
+under app\resources\agent-payload. Free disk of about twice the zip size.
+Network only for what you configure.
 
 KNOWN LIMITS
 ------------

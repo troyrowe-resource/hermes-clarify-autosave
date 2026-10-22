@@ -611,6 +611,48 @@ function includesBlockingClarifyTrigger(value: unknown): boolean {
   return false
 }
 
+/** Answer with a scripted turn, streamed or not as the request asked. */
+function respondWithTurn(res: ServerResponse, stream: boolean, model: string, turn: ScriptedTurn): void {
+  if (stream) {
+    streamScriptedTurn(res, model, turn)
+  } else {
+    nonStreamingScriptedTurn(res, model, turn)
+  }
+}
+
+const hasToolMessage = (messages: unknown): boolean =>
+  Array.isArray(messages) && messages.some((message: { role?: string }) => message?.role === 'tool')
+
+// Shares its history with the 2-question batch trigger, so "any tool result" would false-positive: only THIS
+// turn's answered result counts, matched by its question text.
+const hasSingleBatchToolResult = (messages: unknown): boolean =>
+  Array.isArray(messages) &&
+  messages.some(
+    (message: { role?: string }) => message?.role === 'tool' && JSON.stringify(message).includes('single-batch'),
+  )
+
+/**
+ * The tool-call triggers, tried in this order. The trigger text stays in the history for the rest of the
+ * conversation, so a trigger scripts its turn only until ITS tool result is in the history (`answered`); then the
+ * request falls through to the next trigger and finally the canned reply, instead of looping the turn forever.
+ * The blocking clarify is never answered: it holds the turn open on purpose.
+ */
+const TOOL_CALL_TRIGGERS: {
+  answered: (messages: unknown) => boolean
+  matches: (messages: unknown) => boolean
+  turn: ScriptedTurn
+}[] = [
+  { matches: includesApprovalCommandTrigger, answered: hasToolMessage, turn: APPROVAL_COMMAND_TURN },
+  { matches: includesBatchClarifyTrigger, answered: hasToolMessage, turn: BATCH_CLARIFY_TURN },
+  { matches: includesSingleBatchClarifyTrigger, answered: hasSingleBatchToolResult, turn: SINGLE_BATCH_CLARIFY_TURN },
+  { matches: includesMixedClarifyTrigger, answered: hasToolMessage, turn: MIXED_CLARIFY_TURN },
+  { matches: includesBlockingClarifyTrigger, answered: () => false, turn: BLOCKING_CLARIFY_TURN },
+]
+
+function toolCallTriggerTurn(messages: unknown): ScriptedTurn | undefined {
+  return TOOL_CALL_TRIGGERS.find(trigger => trigger.matches(messages) && !trigger.answered(messages))?.turn
+}
+
 /**
  * The prompt text this mock records as the witness for a chat completion, or
  * `null` when the body carries a shape it does not recognize. Only two shapes
@@ -749,7 +791,6 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
           const stream = parsed.stream === true
           const model = parsed.model || 'mock-model'
           receivedModels.push(model)
-          receivedChatRequests.push({ model, messages: Array.isArray(parsed.messages) ? parsed.messages : [] })
 
           const holdThisCompletion = Boolean(
             options.holdFirstCompletionContaining &&
@@ -764,6 +805,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
           // The trigger keyword is chosen so normal chat tests (which send
           // "Hello, can you hear me?" etc.) never hit this path.
           const messages: any[] = Array.isArray(parsed.messages) ? parsed.messages : []
+          receivedChatRequests.push({ model, messages })
           const lastUserMsg = [...messages].reverse().find(m => m?.role === 'user')
           const userText = typeof lastUserMsg?.content === 'string' ? lastUserMsg.content : ''
 
@@ -811,84 +853,10 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             return
           }
 
-          if (includesApprovalCommandTrigger(parsed.messages)) {
-            // First completion scripts the gated command; once its tool
-            // result is in the history, fall through to the canned reply.
-            const hasToolResult = Array.isArray(parsed.messages)
-              && parsed.messages.some((message: { role?: string }) => message?.role === 'tool')
+          const toolCallTurn = toolCallTriggerTurn(parsed.messages)
 
-            if (!hasToolResult) {
-              if (stream) {
-                streamScriptedTurn(res, model, APPROVAL_COMMAND_TURN)
-              } else {
-                nonStreamingScriptedTurn(res, model, APPROVAL_COMMAND_TURN)
-              }
-
-              return
-            }
-          }
-
-          if (includesBatchClarifyTrigger(parsed.messages)) {
-            // Only the FIRST completion of the conversation scripts the batch
-            // clarify. The trigger text stays in message history, so once the
-            // answered tool result is present the turn falls through to the
-            // canned reply — otherwise the mock loops the quiz forever.
-            const hasToolResult = Array.isArray(parsed.messages)
-              && parsed.messages.some((message: { role?: string }) => message?.role === 'tool')
-
-            if (!hasToolResult) {
-              if (stream) {
-                streamScriptedTurn(res, model, BATCH_CLARIFY_TURN)
-              } else {
-                nonStreamingScriptedTurn(res, model, BATCH_CLARIFY_TURN)
-              }
-
-              return
-            }
-          }
-
-          if (includesSingleBatchClarifyTrigger(parsed.messages)) {
-            // Unlike the 2-question trigger (fresh conversation), this one
-            // shares history with it, so "any tool result" would false-positive
-            // — match only THIS turn's answered result by its question text.
-            const hasOwnToolResult = Array.isArray(parsed.messages)
-              && parsed.messages.some(
-                (message: { role?: string }) =>
-                  message?.role === 'tool' && JSON.stringify(message).includes('single-batch'),
-              )
-
-            if (!hasOwnToolResult) {
-              if (stream) {
-                streamScriptedTurn(res, model, SINGLE_BATCH_CLARIFY_TURN)
-              } else {
-                nonStreamingScriptedTurn(res, model, SINGLE_BATCH_CLARIFY_TURN)
-              }
-
-              return
-            }
-          }
-
-          if (includesMixedClarifyTrigger(parsed.messages)) {
-            const hasToolResult = Array.isArray(parsed.messages)
-              && parsed.messages.some((message: { role?: string }) => message?.role === 'tool')
-
-            if (!hasToolResult) {
-              if (stream) {
-                streamScriptedTurn(res, model, MIXED_CLARIFY_TURN)
-              } else {
-                nonStreamingScriptedTurn(res, model, MIXED_CLARIFY_TURN)
-              }
-
-              return
-            }
-          }
-
-          if (includesBlockingClarifyTrigger(parsed.messages)) {
-            if (stream) {
-              streamScriptedTurn(res, model, BLOCKING_CLARIFY_TURN)
-            } else {
-              nonStreamingScriptedTurn(res, model, BLOCKING_CLARIFY_TURN)
-            }
+          if (toolCallTurn) {
+            respondWithTurn(res, stream, model, toolCallTurn)
 
             return
           }

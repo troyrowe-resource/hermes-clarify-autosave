@@ -60,11 +60,14 @@ const observations: Record<string, unknown> = { timeoutSeconds: CLARIFY_TIMEOUT_
 let firstRequestId = ''
 
 test.beforeAll(async () => {
+  // Booting the app on a cold CI runner outlasts the 90 s default test timeout.
+  test.setTimeout(300_000)
   fixture = await setupMockBackend({ extraConfig: clarifyTimeoutConfig(CLARIFY_TIMEOUT_SECONDS) })
   await waitForAppReady(fixture!, 120_000)
 })
 
 test.afterAll(async () => {
+  test.setTimeout(120_000)
   writeObservations('native-restart-observations.json', observations)
   await fixture?.cleanup()
   fixture = null

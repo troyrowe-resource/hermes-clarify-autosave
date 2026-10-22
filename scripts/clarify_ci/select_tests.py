@@ -37,6 +37,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"::error::listed test file is missing: {name}", file=sys.stderr)
     if absent:
         return 1
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(newline="\n")  # a shell reads this list; Windows text mode would add a CR to every name
     print("\n".join(selected))
     return 0
 

@@ -77,6 +77,8 @@ let link: SocketLink
 const observations: Record<string, unknown> = { timeoutSeconds: CLARIFY_TIMEOUT_SECONDS }
 
 test.beforeAll(async () => {
+  // Booting a backend and the app on a cold CI runner outlasts the 90 s default test timeout.
+  test.setTimeout(300_000)
   mock = await startMockServer()
   backendBox = createCoreSandbox('serve-backend')
   writeMockProviderConfig(backendBox.hermesHome, mock.url, undefined, clarifyTimeoutConfig(CLARIFY_TIMEOUT_SECONDS))
@@ -96,6 +98,7 @@ test.beforeAll(async () => {
 })
 
 test.afterAll(async () => {
+  test.setTimeout(120_000)
   observations.backendLogTail = backend?.logTail()
   writeObservations('native-serve-observations.json', observations)
   await client?.app.close().catch(() => undefined)
@@ -199,7 +202,8 @@ test.describe('clarify drafts (native, remote hermes serve backend)', () => {
     await clearDeviceDrafts(page)
     expect(await deviceDraftEntries(page)).toEqual([])
     await newSession(page)
-    await openSession(page, `${MIXED_CLARIFY_TRIGGER} serve-first`)
+    // The sidecar lists the conversation as "Untitled session" (it is the only one), not by its first prompt.
+    await openSession(page, 'Untitled session', `${MIXED_CLARIFY_TRIGGER} serve-first`)
 
     const settled = settledCards(page).filter({ visible: true })
     await settled.first().waitFor({ state: 'visible', timeout: 60_000 })

@@ -216,6 +216,8 @@ def test_assemble_builds_a_zip_whose_manifest_digests_and_prerequisites_describe
         readme = bundle.read(f"{name}/README-CANDIDATE.txt").decode("utf-8")
     assert {key: inner[key] for key in ("package", "source", "files", "app")} == {key: manifest[key] for key in ("package", "source", "files", "app")}
     assert COMMIT in readme and "@COMMIT@" not in readme and "actions/runs/42" in readme
+    assert "@" not in readme.replace("@@", ""), "every placeholder is replaced"
+    assert f"app\\{EXE} directly" in readme
     sums = (out / "SHA256SUMS.txt").read_text(encoding="utf-8").splitlines()
     assert sums[0] == f"{manifest['archive']['sha256']}  {archive.name}"
     assert sums[1].endswith("  MANIFEST.json") and sums[1].split()[0] == candidate._sha256(out / "MANIFEST.json")
@@ -372,6 +374,29 @@ def test_cli_verdict_and_bundle_env(tmp_path, capsys):
     assert json.loads(capsys.readouterr().out) == candidate.BUNDLE_ENV == {"HERMES_DATA_DIR_SUFFIX": "-clarify-candidate", "HERMES_HOME": None}
 
 
+def test_outputs_publish_what_later_jobs_need_with_lf_endings(tmp_path, monkeypatch, capsys):
+    _, out, manifest = _assemble(tmp_path)
+    github_output = tmp_path / "github-output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(github_output))
+    monkeypatch.setenv("GITHUB_RUN_ID", "42")
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "3")
+    assert candidate.main(["outputs", "--manifest", str(out / "MANIFEST.json")]) == 0
+    expected = [f"package={manifest['package']}", f"zip_name={manifest['archive']['name']}",
+                f"zip_sha256={manifest['archive']['sha256']}", f"exe_sha256={manifest['app']['exe_sha256']}",
+                "artifact=clarify-candidate-42-3"]
+    assert github_output.read_bytes() == ("\n".join(expected) + "\n").encode("utf-8")
+    assert capsys.readouterr().out.splitlines() == expected
+
+
+def test_locate_writes_the_unpacked_directory_to_the_step_outputs(tmp_path, monkeypatch):
+    release = tmp_path / "release"
+    app = _fake_app(release)
+    github_output = tmp_path / "github-output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(github_output))
+    assert candidate.main(["locate", "--release-dir", str(release), "--commit", COMMIT, "--github-output"]) == 0
+    assert github_output.read_bytes() == f"unpacked={app.as_posix()}\n".encode("utf-8")
+
+
 def test_cli_audit_assemble_and_verify_round_trip(tmp_path, monkeypatch, capsys):
     app = _fake_app(tmp_path)
     monkeypatch.setenv("GITHUB_RUN_ID", "7")
@@ -397,6 +422,6 @@ def test_the_shipped_template_has_every_file_the_manifest_and_readme_promise():
                        "launcher/CandidateCommon.ps1", "launcher/Start-HermesClarifyCandidate.ps1",
                        "launcher/Stop-HermesClarifyCandidate.ps1"]
     readme = (TEMPLATE / "README-CANDIDATE.txt").read_text(encoding="utf-8")
-    for placeholder in ("@COMMIT@", "@SHA7@", "@EXE@", "@RUN_URL@"):
+    for placeholder in ("@COMMIT@", "@SHA7@", "@EXE@", "@EXE_NAME@", "@RUN_URL@"):
         assert placeholder in readme
     assert "Start-HermesClarifyCandidate.cmd" in readme and "Stop-HermesClarifyCandidate.cmd" in readme

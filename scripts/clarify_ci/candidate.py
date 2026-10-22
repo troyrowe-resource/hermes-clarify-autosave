@@ -6,6 +6,7 @@
             outer MANIFEST.json and SHA256SUMS.txt that name that archive's own digest
   verify    a downloaded archive matches its manifest; extract it and re-hash every file
   verdict   fold the verification, the packaged-app evidence and the step outcomes into one acceptance verdict
+  outputs   the facts later jobs need (zip name and digest, artifact name) as GitHub step outputs
   bundle-env  the JSON the build bakes into the app (HERMES_BUNDLE_ENV_JSON), which the audit requires
 
 The archive holds one top-level folder ``HermesClarifyCandidate-<sha7>``::
@@ -51,7 +52,9 @@ WINDOWS_TEXT = (".cmd", ".ps1", ".txt")
 # Source files the shipped payload must carry for the autosave RPCs to exist at all.
 CLARIFY_RPCS = ('@method("clarify.draft")', '@method("clarify.drafts")', '@method("clarify.drafts.discard")')
 RUNTIME_PREREQUISITES = (
-    "Windows 10 or Windows 11 on x64; the package was built and tested on a GitHub-hosted windows-2025 x64 runner only.",
+    "Windows on x64. It was built and started only on a GitHub-hosted windows-2025 x64 runner (Windows Server 2025, "
+    "build 26100). Electron 40 needs Windows 10 or newer, but the project's own MSIX packaging floor is Windows 11 22H2 "
+    "(build 22621); nothing older than the runner was tried.",
     "No Python, Node, Git or Hermes installation is required: the candidate carries its own interpreter, "
     "dependencies, tools and this commit's source under app/resources/agent-payload.",
     "The Microsoft Visual C++ 2015-2022 x64 redistributable is assumed present (ordinary on Windows 10/11).",
@@ -290,7 +293,8 @@ def assemble(app: Path, commit: str, template: Path, out_dir: Path, *, max_zip_b
     files, _ = tree_files(app)
     entries = [(f"app/{relative}", size, digest) for relative, size, digest in digest_files(app, files)]
     shipped: dict[str, bytes] = {}
-    replacements = {"COMMIT": commit, "SHA7": commit[:7], "EXE": f"app/{exe.name}", "RUN_URL": _run_url(env) or "(local build)"}
+    replacements = {"COMMIT": commit, "SHA7": commit[:7], "EXE": f"app/{exe.name}", "EXE_NAME": exe.name,
+                    "RUN_URL": _run_url(env) or "(local build)"}
     for source in sorted(path for path in template.rglob("*") if path.is_file()):
         relative = source.relative_to(template).as_posix()
         data = source.read_bytes()
@@ -458,12 +462,18 @@ def _authenticode(path: str | None) -> dict | None:
     return _read_json(Path(path)) if path else None
 
 
+def _github_output(lines: list[str]) -> None:
+    """Append ``name=value`` lines to ``$GITHUB_OUTPUT`` with LF endings, which Windows text mode would turn into CRLF."""
+    if os.environ.get("GITHUB_OUTPUT"):
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8", newline="\n") as stream:
+            stream.write("".join(f"{line}\n" for line in lines))
+
+
 def _locate(args) -> int:
     app = find_unpacked(Path(args.release_dir), args.commit)
     print(app)
-    if args.github_output and os.environ.get("GITHUB_OUTPUT"):
-        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
-            stream.write(f"unpacked={app.as_posix()}\n")
+    if args.github_output:
+        _github_output([f"unpacked={app.as_posix()}"])
     return 0
 
 
@@ -517,6 +527,24 @@ def _bundle_env(_args) -> int:
     return 0
 
 
+def step_outputs(manifest: dict, env: dict[str, str]) -> list[str]:
+    archive = manifest["archive"]
+    return [
+        f"package={manifest['package']}",
+        f"zip_name={archive['name']}",
+        f"zip_sha256={archive['sha256']}",
+        f"exe_sha256={manifest['app']['exe_sha256']}",
+        f"artifact=clarify-candidate-{env['GITHUB_RUN_ID']}-{env['GITHUB_RUN_ATTEMPT']}",
+    ]
+
+
+def _outputs(args) -> int:
+    lines = step_outputs(_read_json(Path(args.manifest)), dict(os.environ))
+    print("\n".join(lines))
+    _github_output(lines)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -564,7 +592,14 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("bundle-env")
     p.set_defaults(func=_bundle_env)
 
+    p = sub.add_parser("outputs")
+    p.add_argument("--manifest", required=True, help="the outer MANIFEST.json `assemble` wrote")
+    p.set_defaults(func=_outputs)
+
     args = parser.parse_args(argv)
+    # Output that a shell step captures must not carry the CR that Windows text mode adds.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(newline="\n")
     try:
         return args.func(args)
     except CandidateError as error:

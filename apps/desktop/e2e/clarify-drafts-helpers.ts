@@ -17,7 +17,7 @@ import { MIXED_CLARIFY_QUESTIONS, type MockServer } from '../../../tests-js/scri
 
 import { expect } from './test'
 
-export const EVIDENCE = process.env.HERMES_E2E_EVIDENCE_DIR
+const EVIDENCE = process.env.HERMES_E2E_EVIDENCE_DIR
 
 /** Config for a short, real clarify wait (the product's own `agent.clarify_timeout`). */
 export const clarifyTimeoutConfig = (seconds: number): string => `agent:\n  clarify_timeout: ${seconds}\n`
@@ -130,20 +130,20 @@ export async function newSession(page: Page): Promise<void> {
 }
 
 /** The visible conversation thread (its messages, including every settled card). */
-export const threadViewport = (page: Page): Locator =>
+const threadViewport = (page: Page): Locator =>
   page.locator('[data-slot="aui_thread-viewport"]').filter({ visible: true }).first()
 
 /**
- * Open a conversation from the sidebar by its title (a conversation is titled by its first prompt) and wait until
- * the thread really shows it: the previous conversation's cards stay on screen until the switch lands.
+ * Open a conversation from the sidebar by the title its row shows and wait until the thread really shows it (the
+ * previous conversation's cards stay on screen until the switch lands). A conversation is titled by its first
+ * prompt, which is also what the thread shows; a `hermes serve` backend lists it as "Untitled session" instead, so
+ * `threadText` names what the thread must show when it differs from the row.
  */
-export async function openSession(page: Page, title: string): Promise<void> {
-  await page
-    .locator('[data-slot="sidebar"]')
-    .getByRole('button', { name: new RegExp(title) })
-    .first()
-    .click()
-  await expect(threadViewport(page)).toContainText(title, { timeout: 30_000 })
+export async function openSession(page: Page, rowTitle: string, threadText = rowTitle): Promise<void> {
+  // The row's own text: a row also carries a drag handle (a `role=button` span labelled "Reorder <title>") that
+  // matches by name but does not open anything.
+  await page.locator('[data-slot="sidebar"]').getByText(rowTitle, { exact: true }).first().click()
+  await expect(threadViewport(page)).toContainText(threadText, { timeout: 30_000 })
 }
 
 export const liveForms = (page: Page): Locator => page.locator('form[data-clarify-batch]')
@@ -164,7 +164,7 @@ export async function waitForLiveForm(page: Page, questions: number, timeout = 9
 export const questionBlock = (form: Locator, index: number): Locator =>
   form.locator('[data-clarify-batch-question]').nth(index)
 
-export const choiceButton = (form: Locator, index: number, label: string): Locator =>
+const choiceButton = (form: Locator, index: number, label: string): Locator =>
   questionBlock(form, index).locator('button[data-choice]').filter({ hasText: label })
 
 export const textField = (form: Locator, index: number): Locator => questionBlock(form, index).locator('textarea')
@@ -210,7 +210,7 @@ export const MIXED_NOTE = 'also: δelta  '
 export const MIXED_QUESTIONS = MIXED_CLARIFY_QUESTIONS.map(entry => entry.question)
 
 /** What `stageMixedDraft` leaves on the form: the final picks and typed text of every question. */
-export const MIXED_STAGED: FormState = {
+const MIXED_STAGED: FormState = {
   picks: [['Bravo', 'Charlie'], ['Tea'], []],
   texts: [MIXED_NOTE, '', MIXED_TEXT]
 }
