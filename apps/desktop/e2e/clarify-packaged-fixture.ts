@@ -220,7 +220,9 @@ const bindingRule: ContractRule = ({ environment: env, layout }, { same }) => {
     ['APPDATA', layout.roaming],
     ['LOCALAPPDATA', layout.local],
     ['TEMP', layout.temp],
-    ['TMP', layout.temp]
+    ['TMP', layout.temp],
+    // Python's tempfile reads TMPDIR before TEMP and TMP.
+    ['TMPDIR', layout.temp]
   ]
 
   return failures(

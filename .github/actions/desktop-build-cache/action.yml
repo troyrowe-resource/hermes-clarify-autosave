@@ -32,6 +32,9 @@ outputs:
   restore-prefix:
     description: Same-producer, target and host fallback prefix.
     value: ${{ steps.describe.outputs.restore-prefix }}
+  cache-matched-key:
+    description: The key a restore found, exactly or by prefix; empty when nothing was restored.
+    value: ${{ steps.restore.outputs.cache-matched-key }}
   cache-hit:
     description: Transport result only; never permission to skip preparation.
     value: ${{ steps.restore.outputs.cache-hit }}

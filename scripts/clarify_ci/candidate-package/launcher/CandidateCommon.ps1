@@ -19,6 +19,8 @@ $script:SandboxMarker = '.hermes-clarify-candidate-sandbox'
 # Appended to the default Hermes home and Electron user data directory names. The build bakes the same value
 # into the app (scripts/clarify_ci/candidate.py BUNDLE_ENV); the launcher refuses a package that does not carry it.
 $script:DataDirSuffix = '-clarify-candidate'
+# Set once the native path helper cannot be compiled here (blocked compiler, constrained language): never retried.
+$script:NativePathsUnavailable = $false
 
 function Stop-Refused {
     param([int]$Code, [string]$Message)
@@ -40,6 +42,7 @@ function Get-NormalPath {
         $existing = Split-Path -Parent $existing
     }
     if (-not $existing -or -not (Test-Path -LiteralPath $existing)) { return $full }
+    if ($script:NativePathsUnavailable) { return ($existing.TrimEnd([char]92, [char]47) + $tail) }
     try {
         if (-not ('HermesCandidateNative' -as [type])) {
             Add-Type -TypeDefinition @'
@@ -82,6 +85,7 @@ public static class HermesCandidateNative {
         }
     } catch {
         # Short-name expansion and resolution are extras; the case-insensitive full-path comparison still applies.
+        if (-not ('HermesCandidateNative' -as [type])) { $script:NativePathsUnavailable = $true }
     }
     return ($existing.TrimEnd([char]92, [char]47) + $tail)
 }
@@ -128,11 +132,20 @@ function Find-ContainedPath {
 }
 
 function Test-NamesRealLocation {
-    # Whether an environment value is a local path that is, or lies inside, one of the real locations' spellings.
-    # Values that are not one rooted path (flags, URLs, ;-lists) never match; one Windows refuses to parse is no path.
+    # Whether an environment value is one rooted Windows path (quoted or not, \\?\ allowed) that is, or lies inside,
+    # one of the real locations' spellings. A list (;), a URL or a flag is not one path. Only a path on a fixed local
+    # drive is looked up on disk (long names, links); a UNC, mapped or removable one is compared as written, so judging
+    # a value never waits on a network that may be gone.
     param([string]$Value, [string[]]$RealForms)
-    if ($Value -notmatch '^(?:[A-Za-z]:[\\/]|\\\\)') { return $false }
-    try { $forms = Get-PathForms $Value } catch { return $false }
+    $path = $Value.Trim().Trim([char]34)
+    if ($path.StartsWith('\\?\UNC\')) { $path = '\\' + $path.Substring(8) }
+    elseif ($path.StartsWith('\\?\')) { $path = $path.Substring(4) }
+    if ($path.Contains(';') -or $path -notmatch '^(?:[A-Za-z]:[\\/]|\\\\[^\\/])' -or $path.IndexOf(':', 2) -ge 0) { return $false }
+    $fixed = $path -match '^[A-Za-z]:' -and [System.IO.DriveInfo]::new($path.Substring(0, 1)).DriveType -eq [System.IO.DriveType]::Fixed
+    try {
+        if ($fixed) { $forms = Get-PathForms $path }
+        else { $forms = @([System.IO.Path]::GetFullPath($path).TrimEnd([char]92, [char]47)) }
+    } catch { return $false }
     return [bool](Find-ContainedPath $RealForms $forms)
 }
 
@@ -351,6 +364,8 @@ function Get-CandidateEnvironment {
         LOCALAPPDATA                               = $Layout.local
         TEMP                                       = $Layout.temp
         TMP                                        = $Layout.temp
+        # Python's tempfile reads TMPDIR before TEMP and TMP; shells such as Git Bash and test harnesses export it.
+        TMPDIR                                     = $Layout.temp
     }
     foreach ($name in $overrides.Keys) { $environment[$name] = [string]$overrides[$name] }
     return $environment

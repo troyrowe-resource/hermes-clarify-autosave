@@ -187,11 +187,14 @@ Assert-Case 'starts in a sandbox outside every real location and prints a launch
     $run = Invoke-Launcher 'Start-HermesClarifyCandidate.ps1' @('-Root', $sandbox, '-EmitEnvironment') @{
         OPENAI_API_KEY = 'sk-test'; GITHUB_TOKEN = 'ghs_test'; HERMES_FOO = 'leak'; NODE_OPTIONS = '--inspect'; ELECTRON_RUN_AS_NODE = '1'; PYTHONPATH = 'C:\leak'
         HERMES_GATEWAY_LOCK_DIR = 'C:\real-locks'; XDG_STATE_HOME = 'C:\real-state'; CODEX_HOME = 'C:\real-codex'; CLAUDE_CONFIG_DIR = 'C:\real-claude'
+        TMPDIR = 'C:\real-tmp'
         # Real locations under names Hermes never reads, spelled differently from the launcher's own forms.
         REAL_HOME_POINTER = ((Join-Path $real '.hermes').Replace('\', '/').ToUpperInvariant() + '/')
         REAL_HOME_CHILD = (Join-Path $realLocal 'hermes\skills')
-        # Not real locations: a parent of them, a URL and a list.
+        REAL_HOME_QUOTED = ('"' + (Join-Path $real '.hermes') + '"'); REAL_HOME_DEVICE = ('\\?\' + (Join-Path $realLocal 'hermes'))
+        # Not real locations: a parent of them, a URL and lists (one starting inside a real home).
         WORK_PARENT = $work; SOME_URL = 'https://example.com/C:/x'; SOME_LIST = ($real + '\.hermes;C:\Windows')
+        LIST_FIRST_INSIDE = ((Join-Path $realLocal 'hermes\bin') + ';C:\Windows')
     }
     if ($run.Code -ne 0) { return "exit $($run.Code): $($run.Err.Trim())" }
     $script:contract = $run.Out.Trim() | ConvertFrom-Json
@@ -201,7 +204,7 @@ if ($contract) {
     $envMap = @{}
     foreach ($property in $contract.environment.PSObject.Properties) { $envMap[$property.Name] = [string]$property.Value }
     Assert-Case 'every state location is inside the sandbox and the user-data switch matches the env var' {
-        $inside = @('HERMES_HOME', 'HERMES_DESKTOP_USER_DATA_DIR', 'HERMES_GATEWAY_LOCK_DIR', 'HERMES_DESKTOP_CWD', 'USERPROFILE', 'HOME', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP')
+        $inside = @('HERMES_HOME', 'HERMES_DESKTOP_USER_DATA_DIR', 'HERMES_GATEWAY_LOCK_DIR', 'HERMES_DESKTOP_CWD', 'USERPROFILE', 'HOME', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'TMPDIR')
         foreach ($name in $inside) { if (-not $envMap[$name].StartsWith($sandbox + '\', [System.StringComparison]::OrdinalIgnoreCase)) { return "$name=$($envMap[$name]) is outside $sandbox" } }
         if ($contract.arguments[0] -ne ('--user-data-dir=' + $envMap['HERMES_DESKTOP_USER_DATA_DIR'])) { return "switch $($contract.arguments[0])" }
         if ($envMap['HERMES_HOME'] -ne (Join-Path $envMap['HERMES_DESKTOP_USER_DATA_DIR'] 'hermes-home')) { return "HERMES_HOME $($envMap['HERMES_HOME'])" }
@@ -216,8 +219,8 @@ if ($contract) {
         foreach ($name in @('OPENAI_API_KEY', 'GITHUB_TOKEN', 'HERMES_FOO', 'NODE_OPTIONS', 'ELECTRON_RUN_AS_NODE', 'PYTHONPATH', 'XDG_STATE_HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR')) { if ($envMap.ContainsKey($name)) { return "$name leaked into the candidate" } }
         if (-not $envMap.ContainsKey('SystemRoot') -or -not $envMap.ContainsKey('PATH')) { return 'SystemRoot or PATH was dropped; Windows programs and Python sockets need them' }
         foreach ($path in $contract.refusedLocations) { if ($envMap.Values -contains $path) { return "a real location $path is in the candidate environment" } }
-        foreach ($name in @('REAL_HOME_POINTER', 'REAL_HOME_CHILD')) { if ($envMap.ContainsKey($name)) { return "$name=$($envMap[$name]) names a real location and reached the candidate" } }
-        foreach ($name in @('WORK_PARENT', 'SOME_URL', 'SOME_LIST')) { if (-not $envMap.ContainsKey($name)) { return "$name names no real location but was withheld" } }
+        foreach ($name in @('REAL_HOME_POINTER', 'REAL_HOME_CHILD', 'REAL_HOME_QUOTED', 'REAL_HOME_DEVICE')) { if ($envMap.ContainsKey($name)) { return "$name=$($envMap[$name]) names a real location and reached the candidate" } }
+        foreach ($name in @('WORK_PARENT', 'SOME_URL', 'SOME_LIST', 'LIST_FIRST_INSIDE')) { if (-not $envMap.ContainsKey($name)) { return "$name names no real location but was withheld" } }
     }
     Assert-Case 'the real locations it guards are the fake real profile, not the sandbox' {
         $locations = @($contract.refusedLocations)
@@ -225,6 +228,14 @@ if ($contract) {
             if (-not ($locations | Where-Object { $_ -ieq $expected })) { return "$expected is not guarded: $($locations -join '; ')" }
         }
     }
+}
+Assert-Case 'an exported HERMES_HOME is withheld under any other name, as the accept job exports it, and Windows essentials stay' {
+    $exported = (Join-Path $work 'machine-home').Replace('\', '/')
+    $run = Invoke-Launcher 'Start-HermesClarifyCandidate.ps1' @('-Root', (Join-Path $work 's-exported'), '-EmitEnvironment') @{ HERMES_HOME = $exported; DECOY_HOME = $exported }
+    if ($run.Code -ne 0) { return "exit $($run.Code): $($run.Err.Trim())" }
+    $names = @(($run.Out.Trim() | ConvertFrom-Json).environment.PSObject.Properties | ForEach-Object { $_.Name })
+    if ($names -contains 'DECOY_HOME') { return 'DECOY_HOME carried the exported HERMES_HOME into the candidate' }
+    foreach ($needed in @('SystemRoot', 'PATH', 'ComSpec', 'windir')) { if ($names -notcontains $needed) { return "$needed was withheld" } }
 }
 Assert-Case 'the default root is under LOCALAPPDATA, beside (not inside) the installed Hermes home' {
     $run = Invoke-Launcher 'Start-HermesClarifyCandidate.ps1' @('-EmitEnvironment')

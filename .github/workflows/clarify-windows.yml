@@ -574,9 +574,11 @@ jobs:
             --work C:/hsb/.build/desktop-job --cache C:/hsb/.cache/desktop-inputs
           python -m scripts.ci.desktop_commands C:/hsb/.build/desktop-job/prepared.json
 
-      # Before the build, so a build that runs out of time still leaves a warm cache for the next dispatch.
+      # Before the build, so a build that runs out of time still leaves a warm cache for the next dispatch. Not when
+      # the restore already found a cache for these exact inputs: re-saving it measured 3.5 to 6 minutes (runs
+      # 39800682655, 39814469770) of a job that otherwise ends 1 to 4 minutes inside its 60-minute limit.
       - name: Save dependency inputs before building
-        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && !startsWith(steps.build-cache.outputs.cache-matched-key, steps.build-cache.outputs.input-prefix) }}
         uses: ./.github/actions/desktop-build-cache
         with:
           phase: save

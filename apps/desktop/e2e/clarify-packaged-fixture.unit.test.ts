@@ -69,6 +69,7 @@ function contract(): LaunchContract {
       SystemRoot: 'C:\\Windows',
       TEMP: layout.temp,
       TMP: layout.temp,
+      TMPDIR: layout.temp,
       USERPROFILE: layout.profile
     },
     exe: EXE,
@@ -211,6 +212,11 @@ describe('the launch contract', () => {
       'an inherited Hermes variable',
       (value: LaunchContract) => (value.environment.HERMES_DESKTOP_HERMES_ROOT = 'D:\\repo'),
       'must not pass on'
+    ],
+    [
+      'a TMPDIR outside the sandbox, which Python prefers to TEMP',
+      (value: LaunchContract) => (value.environment.TMPDIR = 'C:\\Users\\runneradmin\\AppData\\Local\\Temp'),
+      'TMPDIR='
     ],
     ['no PATH', (value: LaunchContract) => delete value.environment.PATH, 'PATH is missing'],
     [
