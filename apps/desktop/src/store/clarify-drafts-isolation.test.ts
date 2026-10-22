@@ -221,11 +221,15 @@ describe('clarify draft identity on the wire and in the lifecycle', () => {
   function twoSessions() {
     const sent: Record<string, unknown>[] = []
 
-    const request = vi.fn(async (method: string, params: Record<string, unknown>) => {
-      sent.push({ method, ...params })
+    const request = vi.fn<(method: string, params: Record<string, unknown>) => Promise<unknown>>(
+      async (method, params) => {
+        sent.push({ method, ...params })
 
-      return method === 'clarify.draft' ? { durable: true, revision: params.revision, status: 'ok' } : { status: 'ok' }
-    })
+        return method === 'clarify.draft'
+          ? { durable: true, revision: params.revision, status: 'ok' }
+          : { status: 'ok' }
+      }
+    )
 
     $gateway.set({ request } as never)
 
@@ -281,11 +285,18 @@ describe('clarify draft identity on the wire and in the lifecycle', () => {
     })
     await flush()
     expect(readClarifyDrafts(two, 'srq-shared')?.drafts.q1?.text).toBe('two, second')
-    expect(sent.filter(row => row.method === 'clarify.draft').map(row => row.text)).toEqual(['two, first', 'two, second'])
+    expect(sent.filter(row => row.method === 'clarify.draft').map(row => row.text)).toEqual([
+      'two, first',
+      'two, second'
+    ])
 
     // And session one's explicit discard names session one only.
     await discardClarifyDrafts(one, 'srq-shared', 'runtime-1')
-    expect(sent.at(-1)).toMatchObject({ method: 'clarify.drafts.discard', request_id: 'srq-shared', session_id: 'runtime-1' })
+    expect(sent.at(-1)).toMatchObject({
+      method: 'clarify.drafts.discard',
+      request_id: 'srq-shared',
+      session_id: 'runtime-1'
+    })
     expect(readClarifyDrafts(two, 'srq-shared')?.drafts.q1?.text).toBe('two, second')
   })
 
@@ -343,7 +354,13 @@ describe('clarify drafts never touch an approval request', () => {
       serverRequestId: 'srq-approval-1',
       sessionId: 'runtime-1'
     })
-    rememberServerRequest({ fail: approvalFail, id: 'srq-approval-1', method: 'approval', params: {}, respond: approvalRespond })
+    rememberServerRequest({
+      fail: approvalFail,
+      id: 'srq-approval-1',
+      method: 'approval',
+      params: {},
+      respond: approvalRespond
+    })
     const pending = JSON.stringify($approvalRequests.get())
 
     const scope = resolveClarifyDraftScope({ sessionId: 'runtime-1', storedSessionId: 'stored-1' }) as ClarifyDraftScope

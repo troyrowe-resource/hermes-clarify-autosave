@@ -15,7 +15,8 @@ Scope: one JSON file per request under ``<profile home>/clarify_drafts/<gateway>
 written atomically (``0600``, file and directory fsynced). The file holds the request's original
 questions and choices, so a draft keeps its meaning after the live request is gone. It stays until it is
 discarded (``clarify.drafts.discard``), every draft in it is superseded by a lock or skip, or its owning
-session is deleted through a wired deletion path (:func:`purge_session`). Retention is NOT tied to the
+session is deleted (:func:`purge_session`, called for every ``SessionDB`` removal by
+``hermes_state_common.emit_session_deleted``; a deliberate archive keeps them). Retention is NOT tied to the
 clarify timeout or any timer: timing out is exactly when the drafts are needed.
 """
 from __future__ import annotations
@@ -325,7 +326,7 @@ def discard(scope: DraftScope, request_id: str) -> bool:
         return True
 
 
-def purge_session(home: Path, session_key: str) -> int:
+def purge_session(home: str | os.PathLike, session_key: str) -> int:
     """Remove every gateway's drafts of one deleted session in *home*. Returns the files removed."""
     removed = 0
     for gateway in sorted(GATEWAYS):

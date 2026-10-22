@@ -79,8 +79,13 @@ const stateLine = () => document.querySelector('[data-clarify-draft-state]')
 const state = () => stateLine()?.getAttribute('data-clarify-draft-state')
 const field = () => screen.getByPlaceholderText('Type your answer…')
 const submit = () => fireEvent.submit(document.querySelector('form') as HTMLFormElement)
-const calls = (request: ReturnType<typeof vi.fn>, method: string) => request.mock.calls.filter(call => call[0] === method)
-const methodsUsed = (request: ReturnType<typeof vi.fn>) => [...new Set(request.mock.calls.map(call => call[0] as string))]
+
+const calls = (request: ReturnType<typeof vi.fn>, method: string) =>
+  request.mock.calls.filter(call => call[0] === method)
+
+const methodsUsed = (request: ReturnType<typeof vi.fn>) => [
+  ...new Set(request.mock.calls.map(call => call[0] as string))
+]
 
 /** Let a settled RPC reply reach the store (the autosave reply is a few microtasks behind its request). */
 const settle = () =>
@@ -220,7 +225,9 @@ describe('clarify draft status under server failures', () => {
     fireEvent.change(field(), { target: { value: 'in the server cache only' } })
     await waitFor(() => expect(state()).toBe('server-unconfirmed'), { timeout: 4000 })
 
-    expect(stateLine()?.textContent).toBe('Draft sent to the server, not yet confirmed on its disk; kept on this device')
+    expect(stateLine()?.textContent).toBe(
+      'Draft sent to the server, not yet confirmed on its disk; kept on this device'
+    )
     expect(stateLine()?.textContent).not.toMatch(/^Draft saved/)
     expect(calls(request, 'clarify.draft')).toHaveLength(1)
   })
@@ -324,6 +331,7 @@ describe('clarify draft status under server failures', () => {
   it('an unprovable draft owner stores nothing, sends nothing, and the card says the text is not saved', async () => {
     // The request arrived on gateway A, but the session is attributed to gateway B: ambiguous, so unscoped.
     recordSessionEventScope({ connectionId: 'gateway-b', profile: 'default', session_id: 'session-1' })
+
     const { request } = mount(() => ({ durable: true, status: 'ok' }), {
       owner: { connectionId: 'gateway-a', profile: 'default' }
     })
@@ -331,7 +339,9 @@ describe('clarify draft status under server failures', () => {
     fireEvent.change(field(), { target: { value: 'whose conversation is this?' } })
     await new Promise(resolve => setTimeout(resolve, 900))
 
-    expect(document.querySelector('[data-clarify-draft-state="unscoped"]')?.textContent).toMatch(/^Not saved: this form could not confirm which conversation owns it/)
+    expect(document.querySelector('[data-clarify-draft-state="unscoped"]')?.textContent).toMatch(
+      /^Not saved: this form could not confirm which conversation owns it/
+    )
     expect(request.mock.calls).toEqual([])
     expect(Object.keys(window.localStorage).filter(key => key.startsWith('hermes.clarifyDrafts'))).toEqual([])
   })
@@ -467,7 +477,9 @@ describe('recalling saved drafts is a read, never a submission', () => {
                 {
                   answers: { q1: 'LOCKED-ANSWER-VALUE' },
                   locked: ['q1'],
-                  responses: [{ question: 'Opening line?', status: 'answered', user_response: 'SUBMITTED-ANSWER-VALUE' }]
+                  responses: [
+                    { question: 'Opening line?', status: 'answered', user_response: 'SUBMITTED-ANSWER-VALUE' }
+                  ]
                 }
               ),
               serverRecord('srq-bbbbbbbbbbbb', { q1: stored('OTHER-REQUEST-DRAFT', 99) })
@@ -491,40 +503,43 @@ describe('recalling saved drafts is a read, never a submission', () => {
     ['a dropped connection', new Error('socket closed')],
     ['a request timeout', new Error('request timed out after 30s: clarify.drafts')],
     ['an internal JSON-RPC error', Object.assign(new Error('internal error'), { code: -32603 })]
-  ])('%s says the read failed, invents no drafts, keeps recall available and is not an unsupported server', async (_name, failure) => {
-    let attempts = 0
+  ])(
+    '%s says the read failed, invents no drafts, keeps recall available and is not an unsupported server',
+    async (_name, failure) => {
+      let attempts = 0
 
-    const { request, respond } = settledAfterRestart(method => {
-      if (method !== 'clarify.drafts') {
-        return { status: 'ok' }
-      }
+      const { request, respond } = settledAfterRestart(method => {
+        if (method !== 'clarify.drafts') {
+          return { status: 'ok' }
+        }
 
-      attempts += 1
+        attempts += 1
 
-      if (attempts === 1) {
-        throw failure
-      }
+        if (attempts === 1) {
+          throw failure
+        }
 
-      return { drafts: [serverRecord(REQUEST_ID, { q1: stored('recovered on retry', 5) })] }
-    })
+        return { drafts: [serverRecord(REQUEST_ID, { q1: stored('recovered on retry', 5) })] }
+      })
 
-    recall()
-    await waitFor(() => expect(document.querySelector('[data-clarify-drafts-recall="error"]')).toBeTruthy())
+      recall()
+      await waitFor(() => expect(document.querySelector('[data-clarify-drafts-recall="error"]')).toBeTruthy())
 
-    expect(document.querySelector('[data-clarify-drafts-recall="error"]')?.textContent).toBe(
-      'Could not read the drafts saved on the server. Try again once connected.'
-    )
-    expect(document.querySelector('[data-clarify-drafts-recovered]')).toBeNull()
-    expect(document.querySelector('[data-clarify-draft]')).toBeNull()
-    expect($clarifyDraftRecallUnavailable.get()).toEqual({})
+      expect(document.querySelector('[data-clarify-drafts-recall="error"]')?.textContent).toBe(
+        'Could not read the drafts saved on the server. Try again once connected.'
+      )
+      expect(document.querySelector('[data-clarify-drafts-recovered]')).toBeNull()
+      expect(document.querySelector('[data-clarify-draft]')).toBeNull()
+      expect($clarifyDraftRecallUnavailable.get()).toEqual({})
 
-    // The retry works: a failed read was not remembered as "this server cannot recall".
-    recall()
-    await waitFor(() => expect(document.querySelector('[data-clarify-drafts-recovered="exact"]')).toBeTruthy())
-    expect(document.body.textContent).toContain('recovered on retry')
-    expect(methodsUsed(request)).toEqual(['clarify.drafts'])
-    expect(respond).not.toHaveBeenCalled()
-  })
+      // The retry works: a failed read was not remembered as "this server cannot recall".
+      recall()
+      await waitFor(() => expect(document.querySelector('[data-clarify-drafts-recovered="exact"]')).toBeTruthy())
+      expect(document.body.textContent).toContain('recovered on retry')
+      expect(methodsUsed(request)).toEqual(['clarify.drafts'])
+      expect(respond).not.toHaveBeenCalled()
+    }
+  )
 
   it.each([
     ['an empty list', { drafts: [] }],

@@ -21,11 +21,16 @@ def settle_batch(locked: dict, frame_result=None, *, ended: str | None = None) -
       those answers over the locks (the frame wins per question) and keeps the frame's own outcome when it
       names a known one (main's classic CLI reports ``timed_out``), else ``submitted``. Anything else (Ink
       Esc / Desktop Skip send ``{}``; an error frame gives ``None``) is a cancel-all: locks kept, ``cancelled``.
+
+    The result is exactly ``{answers, outcome}`` (the declared ``ClarifyResult``): a closing frame's other keys
+    never ride into it. In particular the model-facing ``drafts`` / ``drafts_durable`` / ``drafts_request_id`` are
+    the server's own (``DraftBook.settle``, added by the registry after this rule); a client can neither author
+    drafts the server never saved nor claim a durability the disk never gave.
     """
     if ended is not None:
         return {"answers": dict(locked), "outcome": ended if ended in OUTCOMES else "cancelled"}
     if isinstance(frame_result, dict) and isinstance(frame_result.get("answers"), dict):
         outcome = frame_result.get("outcome")
-        return {**frame_result, "answers": {**locked, **frame_result["answers"]},
+        return {"answers": {**locked, **frame_result["answers"]},
                 "outcome": outcome if outcome in OUTCOMES else "submitted"}
     return {"answers": dict(locked), "outcome": "cancelled"}

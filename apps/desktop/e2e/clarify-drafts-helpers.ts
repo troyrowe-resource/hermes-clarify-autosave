@@ -11,9 +11,9 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-import type { Locator, Page } from '@playwright/test'
+import type { Locator, Page, WebSocketRoute } from '@playwright/test'
 
-import type { MockServer } from '../../../tests-js/scripts/mock-server'
+import { MIXED_CLARIFY_QUESTIONS, type MockServer } from '../../../tests-js/scripts/mock-server'
 
 import { expect } from './test'
 
@@ -40,6 +40,80 @@ export function writeObservations(name: string, data: unknown): void {
   }
 }
 
+// ─── The renderer <-> backend connection ───────────────────────────────
+
+export interface SocketLink {
+  /** Cut every live gateway connection from the network side (an abnormal close, as on a lost link). */
+  drop: () => void
+  /** Cut every live connection AND turn every new one away until `restore` (the network stays down). */
+  down: () => void
+  /** How many gateway sockets the renderer has opened (and the backend accepted) since `interceptGatewaySocket`. */
+  opened: () => number
+  /** Let gateway connections through again after `down`. */
+  restore: () => void
+  /** The URL of every gateway socket the renderer opened, in order (which backend it really dials). */
+  urls: () => string[]
+}
+
+/**
+ * Route the renderer's gateway WebSocket(s) through this test process (a transparent pass-through) so a
+ * connection loss can be injected on any platform. Only sockets opened AFTER this call are routed: reload the
+ * page once afterwards.
+ */
+export async function interceptGatewaySocket(page: Page): Promise<SocketLink> {
+  let networkDown = false
+  const urls: string[] = []
+  const live = new Set<{ client: WebSocketRoute; server: WebSocketRoute }>()
+
+  const drop = () => {
+    for (const { client, server } of [...live]) {
+      void client.close({ code: 1006, reason: 'e2e network drop' })
+      void server.close()
+    }
+  }
+
+  await page.routeWebSocket(/\/api\/ws/, client => {
+    if (networkDown) {
+      void client.close({ code: 1006, reason: 'e2e network down' })
+
+      return
+    }
+
+    urls.push(client.url())
+    const server = client.connectToServer()
+    const link = { client, server }
+    live.add(link)
+    client.onMessage(message => server.send(message))
+    server.onMessage(message => client.send(message))
+    client.onClose((code, reason) => {
+      live.delete(link)
+      void server.close({ code, reason })
+    })
+    server.onClose((code, reason) => {
+      live.delete(link)
+      void client.close({ code, reason })
+    })
+  })
+
+  return {
+    drop,
+    down: () => {
+      networkDown = true
+      drop()
+    },
+    opened: () => urls.length,
+    restore: () => {
+      networkDown = false
+    },
+    urls: () => [...urls]
+  }
+}
+
+/** Wait until the renderer has re-established a gateway connection beyond the `before` count. */
+export async function waitForReconnect(link: SocketLink, before: number, timeout = 60_000): Promise<void> {
+  await expect.poll(() => link.opened(), { message: 'the renderer reconnects to the gateway', timeout }).toBeGreaterThan(before)
+}
+
 // ─── The composer and the live form ────────────────────────────────────
 
 export async function sendPrompt(page: Page, text: string): Promise<void> {
@@ -53,6 +127,15 @@ export async function sendPrompt(page: Page, text: string): Promise<void> {
 /** Start a fresh chat (an empty history), so a scripted clarify trigger fires again. */
 export async function newSession(page: Page): Promise<void> {
   await page.locator('button:has-text("New session")').first().click()
+}
+
+/** Open a conversation from the sidebar by its title (a conversation is titled by its first prompt). */
+export async function openSession(page: Page, title: string): Promise<void> {
+  await page
+    .locator('[data-slot="sidebar"]')
+    .getByRole('button', { name: new RegExp(title) })
+    .first()
+    .click()
 }
 
 export const liveForms = (page: Page): Locator => page.locator('form[data-clarify-batch]')
@@ -110,6 +193,76 @@ export async function retypeText(form: Locator, index: number, text: string): Pr
 }
 
 export const draftStatus = (form: Locator): Locator => form.locator('[data-clarify-draft-state]')
+
+// ─── The scripted edit of the mixed form ───────────────────────────────
+
+/** Unicode (BMP and astral), a newline, an indented line and trailing spaces on a line and at the end. */
+export const MIXED_TEXT = 'Line one ✓ ünï©ödé 🙂  \n  indented second line\nlast line, trailing spaces   '
+export const MIXED_NOTE = 'also: δelta  '
+export const MIXED_QUESTIONS = MIXED_CLARIFY_QUESTIONS.map(entry => entry.question)
+
+/** What `stageMixedDraft` leaves on the form: the final picks and typed text of every question. */
+export const MIXED_STAGED: FormState = {
+  picks: [['Bravo', 'Charlie'], ['Tea'], []],
+  texts: [MIXED_NOTE, '', MIXED_TEXT]
+}
+
+/** The same state as the server stores it (bare labels, per question id). */
+export const MIXED_SERVER_DRAFTS = {
+  q0: { choices: ['Bravo', 'Charlie'], text: MIXED_NOTE },
+  q1: { choices: ['Tea'], text: '' },
+  q2: { choices: [], text: MIXED_TEXT }
+}
+
+/** The settled card's draft rows for that state (picked labels first, then the typed text). */
+export const MIXED_DRAFT_ROWS = [
+  { content: ['Bravo, Charlie', MIXED_NOTE], question: MIXED_QUESTIONS[0] },
+  { content: ['Tea'], question: MIXED_QUESTIONS[1] },
+  { content: [MIXED_TEXT], question: MIXED_QUESTIONS[2] }
+]
+
+/**
+ * Edit the mixed form like a person who changes their mind: Q1 (multi-select) picks A, B and C, drops A and adds
+ * a note; Q2 (single-select) picks Coffee, then Tea, types over it, then picks Tea again; Q3 (free text) is
+ * typed, then replaced with the final multiline text. Nothing is confirmed.
+ */
+export async function stageMixedDraft(form: Locator): Promise<FormState> {
+  for (const label of ['Alpha', 'Bravo', 'Charlie', 'Alpha']) {
+    await toggleChoice(form, 0, label)
+  }
+
+  await typeText(form, 0, MIXED_NOTE)
+
+  await toggleChoice(form, 1, 'Coffee')
+  await toggleChoice(form, 1, 'Tea')
+  await typeText(form, 1, 'oops')
+  await toggleChoice(form, 1, 'Tea')
+
+  await typeText(form, 2, 'first draft, to be replaced')
+  await retypeText(form, 2, MIXED_TEXT)
+  await expect(textField(form, 2)).toHaveValue(MIXED_TEXT)
+
+  return MIXED_STAGED
+}
+
+/** Everything the user has staged on a live form: the picks and typed text of every question, verbatim. */
+export interface FormState {
+  picks: string[][]
+  texts: string[]
+}
+
+export async function readFormState(form: Locator): Promise<FormState> {
+  const count = await form.locator('[data-clarify-batch-question]').count()
+  const picks: string[][] = []
+  const texts: string[] = []
+
+  for (let index = 0; index < count; index += 1) {
+    picks.push(await pickedChoices(form, index))
+    texts.push(await textField(form, index).inputValue())
+  }
+
+  return { picks, texts }
+}
 
 export async function readDraftStatus(form: Locator): Promise<{ state: null | string; text: null | string }> {
   const status = draftStatus(form)
@@ -319,6 +472,13 @@ export function clarifyToolResults(mock: MockServer, fromRequest = 0): ClarifyTo
 
   return results
 }
+
+/**
+ * The user-role messages the model received from `fromRequest` on that carry any of `needles`: a draft sent as the
+ * user's own words (it must be none, whatever saved, recalled or discarded it).
+ */
+export const submittedDraftText = (mock: MockServer, fromRequest: number, needles: string[]): string[] =>
+  userMessages(mock, fromRequest).filter(text => needles.some(needle => text.includes(needle)))
 
 /** Every user-role message the model received from `fromRequest` on, as text. */
 export function userMessages(mock: MockServer, fromRequest = 0): string[] {

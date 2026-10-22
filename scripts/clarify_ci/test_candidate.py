@@ -101,7 +101,7 @@ def test_audit_accepts_a_bundled_one_commit_build_and_describes_it(tmp_path):
     assert problems == []
     assert facts["exe"]["pe_certificate_table_bytes"] == 0 and facts["exe"]["authenticode"]["status"] == "NotSigned"
     assert facts["stamp"]["updateMechanism"] == "external" and facts["stamp"]["source"] == "commit-build"
-    assert facts["payload"]["manifest_target"] == "win32-x64" and facts["file_count"] == 9
+    assert facts["payload"]["manifest_target"] == "win32-x64" and facts["file_count"] == 12
 
 
 @pytest.mark.parametrize("overrides, needle", [
@@ -168,7 +168,7 @@ def test_find_unpacked_wants_exactly_one_bundled_app_with_the_commits_executable
     release = tmp_path / "release"
     _fake_app(release)
     assert candidate.find_unpacked(release, COMMIT) == release / "win-unpacked"
-    with pytest.raises(candidate.CandidateError, match=f"no {EXE.replace('.', r'.')}|has no"):
+    with pytest.raises(candidate.CandidateError, match="has no hermes-1111111.exe"):
         candidate.find_unpacked(release, "1" * 40)
     (release / "win-arm64-unpacked" / "resources" / "agent-payload").mkdir(parents=True)
     (release / "win-arm64-unpacked" / "resources" / "agent-payload" / "manifest.json").write_text("{}", encoding="utf-8")
@@ -217,12 +217,14 @@ def test_assemble_builds_a_zip_whose_manifest_digests_and_prerequisites_describe
     assert sums[1].endswith("  MANIFEST.json") and sums[1].split()[0] == candidate._sha256(out / "MANIFEST.json")
 
 
-def test_assemble_refuses_an_app_that_fails_the_audit_and_an_archive_over_its_bound(tmp_path):
-    app = _fake_app(tmp_path, updateMechanism="self")
+def test_assemble_refuses_an_app_that_fails_the_audit(tmp_path):
     with pytest.raises(candidate.CandidateError, match="not a valid candidate"):
-        _assemble(tmp_path, app)
+        _assemble(tmp_path, _fake_app(tmp_path, updateMechanism="self"))
+
+
+def test_assemble_refuses_an_archive_over_its_bound(tmp_path):
     with pytest.raises(candidate.CandidateError, match="over the 10-byte bound"):
-        _assemble(tmp_path / "b", None, max_zip_bytes=10) if (tmp_path / "b").mkdir() is None else None
+        _assemble(tmp_path, max_zip_bytes=10)
 
 
 def test_verify_accepts_what_assemble_wrote_and_extracts_a_usable_package(tmp_path):
@@ -231,7 +233,7 @@ def test_verify_accepts_what_assemble_wrote_and_extracts_a_usable_package(tmp_pa
     facts, problems = candidate.verify_archive(archive, out / "MANIFEST.json", tmp_path / "extracted", COMMIT)
     assert problems == [], problems
     root = tmp_path / "extracted" / manifest["package"]
-    assert facts["sha256"] == manifest["archive"]["sha256"] and facts["files_checked"] == manifest["files"]["count"] - 0 or True
+    assert facts["sha256"] == manifest["archive"]["sha256"] and facts["files_checked"] == manifest["files"]["count"]
     assert (root / "app" / EXE).read_bytes() == _pe() and (root / "launcher" / "CandidateCommon.ps1").is_file()
 
 

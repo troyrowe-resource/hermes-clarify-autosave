@@ -76,8 +76,9 @@ test.describe('batch clarify card', () => {
     // ONE confirm submits the whole batch.
     await confirmButton.click()
 
-    // The settled card lists both questions with their locked answers.
-    const settled = page.locator('[data-clarify-settled]')
+    // The settled card lists both questions with their locked answers. Scoped to THIS test's own card: both
+    // tests share one chat, so an earlier test's settled card is still on the page.
+    const settled = page.locator('[data-clarify-settled]').filter({ hasText: BATCH_CLARIFY_QUESTIONS[0].question })
     await settled.waitFor({ state: 'visible', timeout: 30_000 })
     await expect(settled.getByText(BATCH_CLARIFY_QUESTIONS[0].question)).toBeVisible()
     await expect(settled.getByText('Coffee', { exact: true })).toBeVisible()
@@ -116,7 +117,9 @@ test.describe('batch clarify card', () => {
     await expect(confirmButton).toBeEnabled()
     await confirmButton.click()
 
-    const settled = page.locator('[data-clarify-settled]')
+    const settled = page
+      .locator('[data-clarify-settled]')
+      .filter({ hasText: SINGLE_BATCH_CLARIFY_QUESTIONS[0]!.question })
     await settled.waitFor({ state: 'visible', timeout: 30_000 })
     await expect(settled.getByText(SINGLE_BATCH_CLARIFY_QUESTIONS[0]!.question)).toBeVisible()
     await expect(settled.getByText('Espresso', { exact: true })).toBeVisible()

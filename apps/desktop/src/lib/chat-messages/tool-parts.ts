@@ -164,6 +164,17 @@ function hasToolMatchOverlap(left: string[], right: string[]): boolean {
   return left.some(value => rightSet.has(value))
 }
 
+/**
+ * Results this renderer wrote itself when a clarify request was withdrawn (`request.cancel`: a timeout or a
+ * Stop): provisional, so the card settles at once. The backend's own `tool.complete` is the authority and
+ * REPLACES one in place; without that the settled part counted as finished, owned no completion, and the real
+ * result seeded a second card beside it.
+ */
+const projectedResults = new WeakSet<object>()
+
+const isProjectedResult = (result: unknown): boolean =>
+  typeof result === 'object' && result !== null && projectedResults.has(result)
+
 function findToolPartIndex(
   parts: ChatMessagePart[],
   name: string,
@@ -181,6 +192,17 @@ function findToolPartIndex(
 
     if (stableIndex >= 0) {
       return stableIndex
+    }
+
+    const projectedIndex =
+      phase === 'complete'
+        ? parts.findIndex(
+            part => part.type === 'tool-call' && part.toolCallId === stableId && isProjectedResult(part.result)
+          )
+        : -1
+
+    if (projectedIndex >= 0) {
+      return projectedIndex
     }
 
     const repeatedIndex =
@@ -447,11 +469,18 @@ export function toolCallOwnerMessageId(
     return null
   }
 
+  // A completion (it carries a result) also owns a part this renderer settled provisionally.
+  const completing = payload?.result !== undefined
+
   for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex -= 1) {
     const message = messages[messageIndex]
 
     for (const part of message.parts) {
-      if (part.type === 'tool-call' && part.toolCallId === stableId && !Object.hasOwn(part, 'result')) {
+      if (
+        part.type === 'tool-call' &&
+        part.toolCallId === stableId &&
+        (!Object.hasOwn(part, 'result') || (completing && isProjectedResult(part.result)))
+      ) {
         return message.id
       }
     }
@@ -515,7 +544,7 @@ function skippedClarifyResult(part: Extract<ChatMessagePart, { type: 'tool-call'
   const args = recordFromUnknown(part.args) ?? {}
   const questions = Array.isArray(args.questions) ? args.questions : []
 
-  return {
+  const result = {
     outcome: 'cancelled',
     responses: questions.map(entry => ({
       question: firstStringField(recordFromUnknown(entry) ?? {}, ['question']),
@@ -523,6 +552,10 @@ function skippedClarifyResult(part: Extract<ChatMessagePart, { type: 'tool-call'
       user_response: null
     }))
   }
+
+  projectedResults.add(result)
+
+  return result
 }
 
 /** Mark one pending clarify as timed out/settled without ending a later phase

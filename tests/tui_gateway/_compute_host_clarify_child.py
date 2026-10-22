@@ -67,4 +67,6 @@ server._get_usage = lambda agent: {}
 server._clarify_timeout_seconds = _clarify_timeout
 
 if __name__ == "__main__":
-    compute_host.run_host()
+    # Importing the server points ``sys.stdout`` at stderr (the JSON-RPC pipe is reserved); the production child
+    # captures the real stdout before that import, here it is the server's own record of it.
+    compute_host.run_host(stdout=server._real_stdout)

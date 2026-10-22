@@ -408,6 +408,24 @@ def _id_chunks(ids, size: int = _SQL_IN_CHUNK):
         yield ids[start:start + size]
 
 
+def _store_home(db) -> str:
+    """The profile home of the store *db* is open on (``<home>/state.db``): the one profile whose rows it holds,
+    whatever profile the process itself runs as."""
+    return os.path.dirname(os.path.abspath(os.fspath(db.db_path)))
+
+
+def _purge_clarify_drafts(db, session_ids) -> None:
+    """A deleted chat takes the unsent clarify drafts either gateway saved for it with it (``tools.clarify_drafts``),
+    from the profile home of the store that lost the row. Per id and fail-open like the plugin hook: a purge that
+    fails is logged, never a failed delete and never a skipped purge of the next id."""
+    for session_id in session_ids:
+        try:
+            from tools.clarify_drafts import purge_session
+            purge_session(_store_home(db), session_id)
+        except Exception:
+            logger.warning("clarify drafts of deleted session %s could not be purged", session_id, exc_info=True)
+
+
 def emit_session_deleted(db, deleted_ids, *, reason, primary=None, sessions_dir=None):
     """Fire ``on_session_delete`` after a committed delete or deliberate archive (#124511).
 
@@ -416,18 +434,22 @@ def emit_session_deleted(db, deleted_ids, *, reason, primary=None, sessions_dir=
     for; without it the first id stands in (bulk sweeps). ``deleted_ids`` rides along when more
     than one row went. Dispatch runs under the store's own profile home, so a process touching
     another profile's store (``sessions repair-profiles``) reaches THAT profile's plugins.
+    Every removal also purges the removed sessions' unsent clarify drafts from that same home; an
+    archive does not (the chat is hidden, not gone).
     Late-bound and fail-open: never breaks the delete.
     """
     ids = sorted({sid for sid in (deleted_ids or ()) if isinstance(sid, str) and sid})
     if not ids:
         return
+    if reason != "archive":
+        _purge_clarify_drafts(db, ids)
     try:
         from hermes_cli.lifecycle import invoke_hook
         from hermes_constants import (
             get_hermes_home, profile_name_for_home, reset_hermes_home_override, set_hermes_home_override,
         )
 
-        home = os.path.dirname(os.path.abspath(os.fspath(db.db_path)))
+        home = _store_home(db)
         profile = profile_name_for_home(home)
         payload: dict = {"session_id": primary if primary in ids else ids[0], "reason": reason, "profile": profile}
         if len(ids) > 1:

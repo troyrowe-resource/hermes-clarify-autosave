@@ -5,6 +5,8 @@
   assemble  zip app + launcher + MANIFEST.json + FILES.sha256 into one bounded archive, plus the
             outer MANIFEST.json and SHA256SUMS.txt that name that archive's own digest
   verify    a downloaded archive matches its manifest; extract it and re-hash every file
+  verdict   fold the verification, the packaged-app evidence and the step outcomes into one acceptance verdict
+  bundle-env  the JSON the build bakes into the app (HERMES_BUNDLE_ENV_JSON), which the audit requires
 
 The archive holds one top-level folder ``HermesClarifyCandidate-<sha7>``::
 
@@ -40,6 +42,12 @@ RECORDED_ENV = (
     "GITHUB_REPOSITORY", "GITHUB_SHA", "GITHUB_REF_NAME", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT",
     "GITHUB_WORKFLOW", "GITHUB_SERVER_URL", "RUNNER_OS", "RUNNER_ARCH", "ImageOS", "ImageVersion",
 )
+# Non-secret defaults the build bakes into the app's main bundle (HERMES_BUNDLE_ENV_JSON, apps/desktop/BUILDING.md):
+# a default home and Electron user-data directory of the candidate's own, and no inherited or registry HERMES_HOME.
+# This is what keeps a double-click start WITHOUT the launcher out of the user's real Hermes home. The launcher
+# sets the same suffix, and passes HERMES_DESKTOP_USER_DATA_DIR, from which the app derives its sandbox home.
+BUNDLE_ENV: dict[str, str | None] = {"HERMES_DATA_DIR_SUFFIX": "-clarify-candidate", "HERMES_HOME": None}
+WINDOWS_TEXT = (".cmd", ".ps1", ".txt")
 # Source files the shipped payload must carry for the autosave RPCs to exist at all.
 CLARIFY_RPCS = ('@method("clarify.draft")', '@method("clarify.drafts")', '@method("clarify.drafts.discard")')
 RUNTIME_PREREQUISITES = (
@@ -207,6 +215,9 @@ def _audit_stamp(resources: Path, commit: str, problems: list[str]) -> dict:
     for key, value in expected.items():
         if stamp.get(key) != value:
             problems.append(f"install stamp {key}={stamp.get(key)!r}, expected {value!r}")
+    if stamp.get("bundleEnv") != BUNDLE_ENV:
+        problems.append(f"install stamp bundleEnv={stamp.get('bundleEnv')!r}, expected {BUNDLE_ENV!r}: "
+                        "a start without the launcher would not stay out of the real Hermes home")
     runtime = stamp.get("runtime")
     if not isinstance(runtime, dict) or not runtime.get("commands", {}).get("hermes"):
         problems.append("install stamp has no completed runtime launch contract")
@@ -248,6 +259,11 @@ def _audit_payload(resources: Path, commit: str, problems: list[str]) -> dict:
     return {"manifest_target": manifest.get("target"), "launchers": manifest.get("launchers"), "runtime": runtime}
 
 
+def _crlf(data: bytes) -> bytes:
+    """Windows line endings whatever the checkout produced: cmd.exe mis-parses labels in an LF-only batch file."""
+    return data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+
+
 def _render(template: str, replacements: dict[str, str]) -> str:
     for key, value in replacements.items():
         template = template.replace(f"@{key}@", value)
@@ -278,7 +294,9 @@ def assemble(app: Path, commit: str, template: Path, out_dir: Path, *, max_zip_b
     for source in sorted(path for path in template.rglob("*") if path.is_file()):
         relative = source.relative_to(template).as_posix()
         data = source.read_bytes()
-        shipped[relative] = _render(data.decode("utf-8"), replacements).encode("utf-8") if relative.endswith(".txt") else data
+        if relative.endswith(".txt"):
+            data = _render(data.decode("utf-8"), replacements).encode("utf-8")
+        shipped[relative] = _crlf(data) if relative.endswith(WINDOWS_TEXT) else data
     entries += [(relative, len(data), hashlib.sha256(data).hexdigest()) for relative, data in sorted(shipped.items())]
     entries.sort()
     listing = "".join(f"{digest}  {relative}\n" for relative, _, digest in entries).encode("utf-8")
@@ -331,8 +349,12 @@ def _write_zip(archive: Path, name: str, disk: list[tuple[Path, str]], memory: d
             bundle.writestr(arcname, data)
 
 
-def verify_archive(archive: Path, manifest_path: Path, extract_to: Path, commit: str | None) -> tuple[dict, list[str]]:
-    """Check a downloaded archive against its outer manifest, extract it, and re-hash every file."""
+def verify_archive(archive: Path, manifest_path: Path, extract_to: Path, commit: str | None,
+                   expected_sha256: str | None = None) -> tuple[dict, list[str]]:
+    """Check a downloaded archive against its outer manifest, extract it, and re-hash every file.
+
+    ``expected_sha256`` is a digest that travelled by another route than the artifact (a job output), so an
+    archive and a manifest that were swapped together still disagree with it."""
     problems: list[str] = []
     outer = _read_json(manifest_path)
     claim = outer.get("archive") or {}
@@ -345,6 +367,8 @@ def verify_archive(archive: Path, manifest_path: Path, extract_to: Path, commit:
     facts["sha256"] = digest
     if digest != claim.get("sha256"):
         problems.append(f"archive sha256 {digest} differs from the manifest's {claim.get('sha256')}")
+    if expected_sha256 and digest != expected_sha256:
+        problems.append(f"archive sha256 {digest} differs from the {expected_sha256} the build job reported")
     source = outer.get("source") or {}
     if commit and source.get("commit") != commit:
         problems.append(f"manifest names commit {source.get('commit')}, expected {commit}")
@@ -396,6 +420,40 @@ def verify_archive(archive: Path, manifest_path: Path, extract_to: Path, commit:
     return facts, problems
 
 
+def build_verdict(manifest: dict, archive_verify: dict, evidence: dict, outcomes: dict[str, str]) -> dict:
+    """One verdict for the candidate: the zip that was verified is the zip the manifest names, the packaged
+    app passed its evidence, and every step the workflow ran succeeded."""
+    claim = manifest.get("archive") or {}
+    facts = archive_verify.get("facts") or {}
+    problems = [f"step {name} was {outcome}" for name, outcome in sorted(outcomes.items()) if outcome != "success"]
+    if archive_verify.get("verdict") != "passed":
+        problems.append("the downloaded archive did not verify against its manifest")
+    if facts.get("sha256") != claim.get("sha256") or not claim.get("sha256"):
+        problems.append("the verified archive is not the archive the manifest names")
+    if evidence.get("verdict") != "passed":
+        problems.append("the packaged-app evidence did not verify")
+    problems += [f"packaged evidence: {item}" for item in evidence.get("problems") or []]
+    return {
+        "schema": 1,
+        "kind": "hermes-clarify-autosave-windows-candidate-acceptance",
+        "passed": not problems,
+        "problems": problems,
+        "commit": (manifest.get("source") or {}).get("commit"),
+        "package": manifest.get("package"),
+        "run_url": (manifest.get("build") or {}).get("run_url"),
+        "archive": {key: claim.get(key) for key in ("name", "bytes", "sha256")},
+        "exe": {"path": (manifest.get("app") or {}).get("exe"), "sha256": (manifest.get("app") or {}).get("exe_sha256")},
+        "steps": dict(sorted(outcomes.items())),
+        "archive_verification": {"verdict": archive_verify.get("verdict"), "files_checked": facts.get("files_checked")},
+        "packaged_evidence": {"verdict": evidence.get("verdict"), "specs": evidence.get("specs"), "stats": evidence.get("stats")},
+        "signing": (manifest.get("signing") or {}).get("status"),
+        "publication": (manifest.get("publication") or {}).get("status"),
+        "scope": "Passed on a clean GitHub-hosted windows-2025 x64 runner, from the downloaded and re-verified zip. "
+                 "It does not show that the candidate works on any other machine, with a real model provider or "
+                 "server, beside an installed Hermes, or through any update path.",
+    }
+
+
 def _authenticode(path: str | None) -> dict | None:
     return _read_json(Path(path)) if path else None
 
@@ -428,12 +486,35 @@ def _assemble(args) -> int:
 
 
 def _verify(args) -> int:
-    facts, problems = verify_archive(Path(args.zip), Path(args.manifest), Path(args.extract_to), args.commit)
+    facts, problems = verify_archive(Path(args.zip), Path(args.manifest), Path(args.extract_to), args.commit,
+                                     args.expect_sha256)
     _write_json(Path(args.out), {"facts": facts, "problems": problems, "verdict": "failed" if problems else "passed"})
     for problem in problems:
         print(f"::error::candidate verification: {problem}", file=sys.stderr)
     print(f"candidate verification: {len(problems)} problem(s); sha256 {facts['sha256']}; {facts.get('files_checked', 0)} files re-hashed")
     return 1 if problems else 0
+
+
+def _verdict(args) -> int:
+    outcomes: dict[str, str] = {}
+    for item in args.outcome:
+        name, sep, value = item.partition("=")
+        if not sep or not name:
+            raise CandidateError(f"--outcome expects name=value, got {item!r}")
+        outcomes[name] = value or "not-run"
+    verdict = build_verdict(_read_json(Path(args.manifest)), _read_json(Path(args.archive_verify)),
+                            _read_json(Path(args.evidence_verdict)), outcomes)
+    _write_json(Path(args.out), verdict)
+    for problem in verdict["problems"]:
+        print(f"::error::candidate acceptance: {problem}", file=sys.stderr)
+    print(f"candidate acceptance: {'PASSED' if verdict['passed'] else 'FAILED'} for {verdict['package']} "
+          f"(zip sha256 {verdict['archive']['sha256']})")
+    return 0 if verdict["passed"] else 1
+
+
+def _bundle_env(_args) -> int:
+    print(json.dumps(BUNDLE_ENV, sort_keys=True, separators=(",", ":")))
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -468,8 +549,20 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--manifest", required=True)
     p.add_argument("--extract-to", required=True)
     p.add_argument("--commit")
+    p.add_argument("--expect-sha256", help="digest the archive must have, reported by another route than the artifact")
     p.add_argument("--out", required=True)
     p.set_defaults(func=_verify)
+
+    p = sub.add_parser("verdict")
+    p.add_argument("--manifest", required=True, help="the outer MANIFEST.json that travelled with the zip")
+    p.add_argument("--archive-verify", required=True, help="the JSON `verify` wrote")
+    p.add_argument("--evidence-verdict", required=True, help="the JSON `evidence.py verify` wrote for the packaged spec")
+    p.add_argument("--outcome", action="append", default=[], help="step=outcome (every one must be success)")
+    p.add_argument("--out", required=True)
+    p.set_defaults(func=_verdict)
+
+    p = sub.add_parser("bundle-env")
+    p.set_defaults(func=_bundle_env)
 
     args = parser.parse_args(argv)
     try:
