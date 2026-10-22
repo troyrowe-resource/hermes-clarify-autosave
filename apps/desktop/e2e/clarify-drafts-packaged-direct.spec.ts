@@ -40,6 +40,7 @@ import {
   isInside,
   listEntries,
   processesInside,
+  readAgentCwd,
   readCandidatePackage,
   readHostRecords,
   readMainFacts,
@@ -77,15 +78,13 @@ const check = (condition: boolean, message: string): void => expect(condition, m
 
 const samePathOrNull = (value: null | string, expected: string): boolean => value !== null && samePath(value, expected)
 
-/** A person's environment: the machine's own, minus the dev-tree decoys the launcher run proved are withheld. */
+/** A person's environment: the machine's own. The harness's private HERMES_E2E_* settings are not part of it. */
 function directEnvironment(): Record<string, string> {
-  const decoys = new Set(CONFIG.decoys.map(name => name.toUpperCase()))
-
   return Object.fromEntries(
     Object.entries(process.env).filter((entry): entry is [string, string] => {
       const [name, value] = entry
 
-      return value !== undefined && !decoys.has(name.toUpperCase())
+      return value !== undefined && !name.toUpperCase().startsWith('HERMES_E2E_')
     })
   )
 }
@@ -235,7 +234,14 @@ test.describe('clarify drafts (packaged candidate, started directly)', () => {
         userDataSwitchPassed: main.argv.some(argument => argument.startsWith('--user-data-dir'))
       }
 
+      // Evidence, not a gate: without HERMES_DESKTOP_CWD the packaged app falls back to Electron's home, the real profile.
+      const agentCwd = await readAgentCwd(page)
+
       observations.identity = facts
+      observations.agentWorkingDirectory = {
+        cwd: agentCwd,
+        isRealProfile: userProfile !== undefined && samePath(agentCwd, userProfile)
+      }
 
       check(facts.isPackaged, 'app.isPackaged: this is the packaged app')
       check(facts.execPathIsPackagedExe, `the running executable is the packaged ${pkg.exe}, not ${main.execPath}`)

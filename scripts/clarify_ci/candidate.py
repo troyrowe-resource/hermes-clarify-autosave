@@ -560,7 +560,9 @@ def _verdict(args) -> int:
         label, sep, path = item.partition("=")
         if not sep or not label or not path:
             raise CandidateError(f"--evidence-verdict expects label=path, got {item!r}")
-        evidence[label] = _read_json(Path(path))
+        # A run whose evidence step never ran wrote no verdict: that is a failed run to name, not a crash to explain.
+        evidence[label] = _read_json(Path(path)) if Path(path).is_file() else {
+            "verdict": "failed", "problems": [f"no verdict was written ({Path(path).name}): the step before it did not run"]}
     verdict = build_verdict(_read_json(Path(args.manifest)), _read_json(Path(args.archive_verify)), evidence, outcomes)
     _write_json(Path(args.out), verdict)
     for problem in verdict["problems"]:

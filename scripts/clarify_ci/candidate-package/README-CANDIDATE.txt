@@ -23,11 +23,12 @@ by default
 
     %LOCALAPPDATA%\HermesClarifyCandidate
 
-holding the candidate's Hermes home, Electron user data, a private user profile
-and a temp folder. It REFUSES to start if that folder would be, sit inside, or
-contain any real Hermes location of yours (default home, legacy home, the
-installed app's user data or updater cache, any HERMES_HOME you or the machine
-have set), and it refuses a package that does not match MANIFEST.json.
+holding the candidate's Hermes home, Electron user data, a private user
+profile, the folder the assistant works in (workspace) and a temp folder. It
+REFUSES to start if that folder would be, sit inside, or contain any real
+Hermes location of yours (default home, legacy home, the installed app's user
+data or updater cache, any HERMES_HOME you or the machine have set), and it
+refuses a package that does not match MANIFEST.json.
 
 What it does not touch: an installed Hermes app, its updater, its data, its
 backend, the hermes:// handler, your PATH. The candidate has its own product
@@ -38,11 +39,16 @@ It starts with no provider configured. Add one inside the candidate, or connect
 it to a server, exactly as you would a fresh Hermes. Nothing is copied from
 your real Hermes.
 
-Do not start app\@EXE_NAME@ directly. It keeps its own data folders (home
-%LOCALAPPDATA%\hermes-clarify-candidate), cannot update itself and never reads
-an exported or saved HERMES_HOME, but a direct start re-points the hermes://
-link handler of an installed Hermes at the candidate, which only the launcher
-prevents.
+Do not start app\@EXE_NAME@ directly. A direct start is contained, not
+isolated. The build keeps to its own data folders (Electron user data
+%APPDATA%\HermesBundledCommit@SHA7@-clarify-candidate, next to an
+empty %APPDATA%\HermesBundledCommit@SHA7@; Hermes home
+%LOCALAPPDATA%\hermes-clarify-candidate), cannot update itself, never reads an
+exported or saved HERMES_HOME and never registers the hermes:// link handler.
+But those folders are in your real profile instead of the sandbox, its
+background gateway publishes its record for other gateways under
+%USERPROFILE%\.local\state\hermes, and the assistant's default working
+folder is your user profile folder. Only the launcher moves all three.
 
 STOP
 ----

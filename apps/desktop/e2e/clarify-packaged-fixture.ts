@@ -59,7 +59,8 @@ const layoutSchema = z.object({
   roaming: z.string(),
   root: z.string(),
   temp: z.string(),
-  userData: z.string()
+  userData: z.string(),
+  workspace: z.string()
 })
 
 const contractSchema = z.object({
@@ -123,6 +124,7 @@ export interface ContractExpectation {
 const ALLOWED_HERMES_VARIABLES = new Set([
   'HERMES_DATA_DIR_SUFFIX',
   'HERMES_DESKTOP_APP_NAME',
+  'HERMES_DESKTOP_CWD',
   'HERMES_DESKTOP_IGNORE_EXISTING',
   'HERMES_DESKTOP_ISOLATED_BACKEND',
   'HERMES_DESKTOP_SKIP_PROTOCOL_REGISTRATION',
@@ -160,7 +162,16 @@ type ContractRule = (contract: LaunchContract, check: ContractCheck) => string[]
 const failures = (checks: [boolean, string][]): string[] =>
   checks.filter(([holds]) => !holds).map(([, message]) => message)
 
-const LAYOUT_KEYS = ['userData', 'hermesHome', 'profile', 'roaming', 'local', 'temp', 'gatewayLocks'] as const
+const LAYOUT_KEYS = [
+  'userData',
+  'hermesHome',
+  'profile',
+  'roaming',
+  'local',
+  'temp',
+  'gatewayLocks',
+  'workspace'
+] as const
 
 const unset = (value: string | undefined): string => value ?? '(unset)'
 
@@ -202,6 +213,8 @@ const bindingRule: ContractRule = ({ environment: env, layout }, { same }) => {
     ['HERMES_DESKTOP_USER_DATA_DIR', layout.userData],
     // The per-OS-user rendezvous in which gateways find each other: a candidate must never see the user's real one.
     ['HERMES_GATEWAY_LOCK_DIR', layout.gatewayLocks],
+    // Where the assistant works: a packaged app without it falls back to Electron's home, the REAL profile on Windows.
+    ['HERMES_DESKTOP_CWD', layout.workspace],
     ['USERPROFILE', layout.profile],
     ['HOME', layout.profile],
     ['APPDATA', layout.roaming],
@@ -507,6 +520,23 @@ export function readVersionInfo(page: Page): Promise<VersionInfo> {
       await bridge.getVersion()
 
     return { commit, dirty, hermesHome, hermesRoot, hermesRuntime, payload, platform, source, updateMechanism }
+  })
+}
+
+interface ProjectDirBridge {
+  settings: { getDefaultProjectDir: () => Promise<{ resolvedCwd: string }> }
+}
+
+/** The folder the assistant works in when a session names none: the app's own resolution (main.ts resolveHermesCwd). */
+export function readAgentCwd(page: Page): Promise<string> {
+  return page.evaluate(async (): Promise<string> => {
+    const bridge = (window as unknown as { hermesDesktop?: ProjectDirBridge }).hermesDesktop
+
+    if (!bridge) {
+      throw new Error('the desktop settings bridge is unavailable')
+    }
+
+    return (await bridge.settings.getDefaultProjectDir()).resolvedCwd
   })
 }
 

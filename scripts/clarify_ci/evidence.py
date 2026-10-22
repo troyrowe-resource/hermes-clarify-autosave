@@ -6,6 +6,8 @@ Each subcommand does one bounded job and exits non-zero when its claim does not 
   stage      create an empty, owned evidence directory (refuses a non-empty one)
   guard      the E2E fixture still sets every isolation flag this workflow relies on,
              and every native spec (and every --extra-spec) drives the app through that fixture
+  specs      the spec files a job runs (the glob, minus --exclude-spec, plus --extra-spec), one per line,
+             so the Playwright command line and `verify` cannot disagree about what ran
   sentinels  record which real-install locations exist (default homes, protocol keys, any --watch)
              and, beside the snapshot, the bounded entry names inside any that do
   isolation  fail if a sentinel absent before the native run exists after it
@@ -55,6 +57,12 @@ FIXTURE_FLAGS = {
     "HERMES_DESKTOP_HERMES_ROOT": r"HERMES_DESKTOP_HERMES_ROOT:\s*REPO_ROOT",
     "HERMES_DESKTOP_APP_NAME": r"HERMES_DESKTOP_APP_NAME:\s*`HermesE2E-\$\{Date\.now\(\)\}`",
     "HERMES_DESKTOP_SKIP_PROTOCOL_REGISTRATION": r"HERMES_DESKTOP_SKIP_PROTOCOL_REGISTRATION:\s*'1'",
+    # Belt and braces behind HERMES_DESKTOP_USER_DATA_DIR: Electron is told its user data directory too, so nothing
+    # that asks it for the default one (%APPDATA%\<app name>, where an installed app keeps its data) can create it.
+    "--user-data-dir": r"`--user-data-dir=\$\{userDataDir\}`",
+    # The home and the per-OS-user gateway rendezvous (HERMES_GATEWAY_LOCK_DIR; USERPROFILE on Windows) are the
+    # sandbox's too: otherwise an "isolated" run writes, or attaches through, the real profile's gateway lock dir.
+    "sandboxHomeEnv": r"\.\.\.sandboxHomeEnv\(",
 }
 
 # Where a real installed app/home would live. HERMES_DESKTOP_APP_NAME, the sandbox paths and the
@@ -138,11 +146,41 @@ def _extra_specs(args) -> list[str]:
     return [_base_name(name) for name in args.extra_spec or []]
 
 
+def _glob_specs(args) -> list[str]:
+    """Every spec the glob finds, minus the deliberate exclusions.
+
+    An exclusion belongs to a job that does not run that spec because another job does; one the glob no longer
+    finds (the spec was renamed or deleted) is an error, so a stale exclusion cannot quietly hide a spec."""
+    found = discover_specs(Path(args.specs_dir), args.spec_glob)
+    excluded = [_base_name(name) for name in args.exclude_spec or []]
+    stale = [name for name in excluded if name not in found]
+    if stale:
+        raise SystemExit(f"--exclude-spec names no spec that {args.spec_glob} finds under {args.specs_dir}: {', '.join(stale)}")
+    return [name for name in found if name not in excluded]
+
+
 def _requested_specs(args) -> list[str]:
-    """Spec file names to verify: the explicit ones, else every spec the glob finds."""
+    """Spec file names to verify: the explicit ones, else every spec the glob finds (less any exclusion)."""
     if args.spec:
         return [_base_name(name) for name in args.spec]
-    return discover_specs(Path(args.specs_dir), args.spec_glob)
+    return _glob_specs(args)
+
+
+def selected_specs(args) -> tuple[list[str], list[str]]:
+    """The named specs a job runs and, apart, the extras that are proven by the Playwright JSON alone."""
+    specs = _requested_specs(args)
+    return specs, [name for name in _extra_specs(args) if name not in specs]
+
+
+def list_specs(args) -> int:
+    named, extras = selected_specs(args)
+    if not named and not extras:
+        print(f"::error::no spec under {args.specs_dir} matches {args.spec_glob}", file=sys.stderr)
+        return 1
+    folder = Path(args.specs_dir).name
+    for name in [*named, *extras]:
+        print(f"{folder}/{name}")
+    return 0
 
 
 def guard(args) -> int:
@@ -151,7 +189,7 @@ def guard(args) -> int:
     if args.spec:
         specs = [Path(item) for item in args.spec]
     else:
-        specs = [Path(args.specs_dir) / name for name in discover_specs(Path(args.specs_dir), args.spec_glob)]
+        specs = [Path(args.specs_dir) / name for name in _glob_specs(args)]
         if not specs:
             missing.append(f"no native spec under {args.specs_dir} matches {args.spec_glob}")
     for extra in _extra_specs(args):
@@ -445,8 +483,7 @@ def _slug_expectations(items: Sequence[str]) -> dict[str, list[str]]:
 
 def verify(args) -> int:
     problems: list[str] = []
-    specs = _requested_specs(args)
-    extras = [name for name in _extra_specs(args) if name not in specs]
+    specs, extras = selected_specs(args)
     if not specs:
         problems.append(f"no native spec found under {args.specs_dir} matching {args.spec_glob}")
     try:
@@ -566,6 +603,10 @@ def _add_spec_selection(parser: argparse.ArgumentParser, help_text: str) -> None
                         help="spec file name (repeatable) that is part of the gate but is not named "
                              "clarify-drafts-<slug>.spec.ts: checked in the Playwright JSON (and by guard), "
                              "with no per-spec evidence files")
+    parser.add_argument("--exclude-spec", action="append",
+                        help="spec file name (repeatable) that the glob finds but this job deliberately does not run "
+                             "because another job does; say why next to the flag. A name the glob does not find is an "
+                             "error")
     parser.add_argument("--specs-dir", default=SPEC_DIR)
     parser.add_argument("--spec-glob", default=NATIVE_SPEC_GLOB)
 
@@ -588,6 +629,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--fixtures", default="apps/desktop/e2e/fixtures.ts")
     _add_spec_selection(p, "spec file path (repeatable); default: every spec the glob finds")
     p.set_defaults(func=guard)
+
+    p = sub.add_parser("specs")
+    _add_spec_selection(p, "spec file name (repeatable); default: every spec the glob finds")
+    p.set_defaults(func=list_specs)
 
     p = sub.add_parser("sentinels")
     p.add_argument("--out", required=True)
@@ -628,6 +673,8 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=gate)
 
     args = parser.parse_args(argv)
+    if getattr(args, "exclude_spec", None) and getattr(args, "spec", None):
+        parser.error("--exclude-spec only narrows the glob; it cannot be combined with an explicit --spec")
     return args.func(args)
 
 

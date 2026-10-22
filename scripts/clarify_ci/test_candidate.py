@@ -458,6 +458,10 @@ def test_cli_verdict_and_bundle_env(tmp_path, capsys):
     assert json.loads(out.read_text(encoding="utf-8-sig"))["verdict"] == "passed"
     assert candidate.main(args + ["--outcome", "packaged-e2e=failure"]) == 1
     assert "packaged-e2e was failure" in capsys.readouterr().err
+    paths["direct"].unlink()
+    assert candidate.main(args + ["--outcome", "packaged-e2e=success"]) == 1, "a run with no verdict file is a failed run"
+    assert "direct evidence: no verdict was written (direct.json)" in capsys.readouterr().err
+    assert json.loads(out.read_text(encoding="utf-8-sig"))["verdict"] == "failed"
     assert candidate.main(["verdict", "--manifest", str(paths["manifest"]), "--archive-verify", str(paths["archive"]),
                            "--evidence-verdict", str(paths["launcher"]), "--out", str(out)]) == 1, "label=path is required"
     assert "expects label=path" in capsys.readouterr().err

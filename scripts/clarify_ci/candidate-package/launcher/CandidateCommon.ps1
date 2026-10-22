@@ -4,7 +4,9 @@
 #   * every state location Hermes and Electron use is a directory inside ONE disposable sandbox root, including
 #     the user profile (Python's Path.home() and Node's os.homedir() read USERPROFILE on Windows, never HOME) and the
 #     per-OS-user rendezvous directory in which Hermes gateways find each other (HERMES_GATEWAY_LOCK_DIR, which
-#     otherwise lives under the profile): a candidate can never attach to the user's real backend;
+#     otherwise lives under the profile): a candidate can never attach to the user's real backend. The agent's
+#     working directory is a sandbox folder too (HERMES_DESKTOP_CWD): a packaged app without one falls back to
+#     Electron's home folder, which on Windows is the REAL profile whatever USERPROFILE says;
 #   * the sandbox is never, never inside, and never an ancestor of a real Hermes location of the
 #     current user (default home, legacy home, installed app's user data and updater cache, any
 #     HERMES_HOME the user or the machine has set);
@@ -124,6 +126,7 @@ function Get-SandboxLayout {
         local      = (Join-Path $profile 'AppData\Local')
         temp       = (Join-Path $RootFull 'tmp')
         gatewayLocks = (Join-Path $RootFull 'gateway-locks')
+        workspace  = (Join-Path $RootFull 'workspace')
     }
 }
 
@@ -145,7 +148,7 @@ function Assert-SafeSandbox {
             Stop-Refused 2 "the sandbox root '$rootFull' is, or contains, $($container.Why) ($($container.Path))."
         }
     }
-    foreach ($name in @('root', 'userData', 'hermesHome', 'profile', 'roaming', 'local', 'temp', 'gatewayLocks')) {
+    foreach ($name in @('root', 'userData', 'hermesHome', 'profile', 'roaming', 'local', 'temp', 'gatewayLocks', 'workspace')) {
         if (Test-ReparsePoint $layout[$name]) {
             Stop-Refused 2 "'$($layout[$name])' is a link or junction; the sandbox must be a plain directory tree."
         }
@@ -160,7 +163,7 @@ function Assert-SafeSandbox {
 
 function Initialize-Sandbox {
     param($Layout, [string]$Commit)
-    foreach ($name in @('root', 'userData', 'hermesHome', 'profile', 'roaming', 'local', 'temp', 'gatewayLocks')) {
+    foreach ($name in @('root', 'userData', 'hermesHome', 'profile', 'roaming', 'local', 'temp', 'gatewayLocks', 'workspace')) {
         New-Item -ItemType Directory -Force -Path $Layout[$name] | Out-Null
     }
     $marker = Join-Path $Layout.root $script:SandboxMarker
@@ -225,6 +228,7 @@ function Get-CandidateEnvironment {
         HERMES_HOME                                = $Layout.hermesHome
         HERMES_DESKTOP_USER_DATA_DIR               = $Layout.userData
         HERMES_GATEWAY_LOCK_DIR                    = $Layout.gatewayLocks
+        HERMES_DESKTOP_CWD                         = $Layout.workspace
         HERMES_DESKTOP_IGNORE_EXISTING             = '1'
         HERMES_DESKTOP_ISOLATED_BACKEND            = '1'
         HERMES_DESKTOP_SKIP_PROTOCOL_REGISTRATION  = '1'

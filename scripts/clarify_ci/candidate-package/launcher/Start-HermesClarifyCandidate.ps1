@@ -5,7 +5,8 @@
 .DESCRIPTION
   Run through Start-HermesClarifyCandidate.cmd. The candidate keeps ALL of its state under one sandbox root
   (default %LOCALAPPDATA%\HermesClarifyCandidate): Hermes home, Electron user data, a sandboxed user profile
-  (so Python's Path.home() and Electron's AppData folders land there too) and a temp directory.
+  (so Python's Path.home() and Electron's AppData folders land there too), the per-user gateway rendezvous
+  directory, the folder the assistant works in by default, and a temp directory.
 
   It refuses to start (exit 2) when the sandbox would be, sit inside, or contain a real Hermes location of the
   current user, and (exit 3/4) when the package is damaged or is not a one-commit bundled build whose updater
@@ -95,6 +96,7 @@ Write-Output ('Sandbox: ' + $layout.root)
 Write-Output ('  Hermes home : ' + $layout.hermesHome)
 Write-Output ('  Electron    : ' + $layout.userData)
 Write-Output ('  Gateway lock: ' + $layout.gatewayLocks)
+Write-Output ('  Workspace   : ' + $layout.workspace)
 Write-Output 'This candidate is unsigned and separate from any installed Hermes. Stop it (and the background'
 Write-Output 'gateway it starts) with Stop-HermesClarifyCandidate.cmd; delete the sandbox folder to reset it.'
 if ($Wait) {

@@ -14,7 +14,7 @@
  *     the backend's store; a cut connection and a reload with the DEVICE copy removed bring the same card back
  *     from the serving process's mirror of the child's drafts; the real timeout leaves drafts, never answers,
  *     and the model is told exactly that.
- *  2. A freshly started backend process (the old one killed, its child with it): the explicit recall reads the
+ *  2. A freshly started backend process (the old one killed): the explicit recall reads the
  *     exact text the child wrote, with no device copy (same scope in both processes); an explicit discard
  *     removes the record from the backend's disk.
  */

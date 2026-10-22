@@ -146,12 +146,13 @@ if ($contract) {
     $envMap = @{}
     foreach ($property in $contract.environment.PSObject.Properties) { $envMap[$property.Name] = [string]$property.Value }
     Assert-Case 'every state location is inside the sandbox and the user-data switch matches the env var' {
-        $inside = @('HERMES_HOME', 'HERMES_DESKTOP_USER_DATA_DIR', 'HERMES_GATEWAY_LOCK_DIR', 'USERPROFILE', 'HOME', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP')
+        $inside = @('HERMES_HOME', 'HERMES_DESKTOP_USER_DATA_DIR', 'HERMES_GATEWAY_LOCK_DIR', 'HERMES_DESKTOP_CWD', 'USERPROFILE', 'HOME', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP')
         foreach ($name in $inside) { if (-not $envMap[$name].StartsWith($sandbox + '\', [System.StringComparison]::OrdinalIgnoreCase)) { return "$name=$($envMap[$name]) is outside $sandbox" } }
         if ($contract.arguments[0] -ne ('--user-data-dir=' + $envMap['HERMES_DESKTOP_USER_DATA_DIR'])) { return "switch $($contract.arguments[0])" }
         if ($envMap['HERMES_HOME'] -ne (Join-Path $envMap['HERMES_DESKTOP_USER_DATA_DIR'] 'hermes-home')) { return "HERMES_HOME $($envMap['HERMES_HOME'])" }
-        foreach ($name in @('userData', 'hermesHome', 'profile', 'roaming', 'local', 'temp', 'gatewayLocks')) { if (-not (Test-Path -LiteralPath $contract.layout.$name)) { return "$name was not created" } }
+        foreach ($name in @('userData', 'hermesHome', 'profile', 'roaming', 'local', 'temp', 'gatewayLocks', 'workspace')) { if (-not (Test-Path -LiteralPath $contract.layout.$name)) { return "$name was not created" } }
         if ($envMap['HERMES_GATEWAY_LOCK_DIR'] -ne $contract.layout.gatewayLocks) { return "lock dir $($envMap['HERMES_GATEWAY_LOCK_DIR'])" }
+        if ($envMap['HERMES_DESKTOP_CWD'] -ne $contract.layout.workspace) { return "agent working directory $($envMap['HERMES_DESKTOP_CWD'])" }
         if (-not (Test-Path -LiteralPath (Join-Path $sandbox '.hermes-clarify-candidate-sandbox'))) { return 'no sandbox marker' }
     }
     Assert-Case 'the isolation flags are set and nothing from the real user environment leaks in' {

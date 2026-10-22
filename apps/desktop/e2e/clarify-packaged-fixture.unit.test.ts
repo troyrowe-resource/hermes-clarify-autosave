@@ -45,7 +45,8 @@ function contract(): LaunchContract {
     roaming: `${ROOT}\\profile\\AppData\\Roaming`,
     root: ROOT,
     temp: `${ROOT}\\tmp`,
-    userData: `${ROOT}\\user-data`
+    userData: `${ROOT}\\user-data`,
+    workspace: `${ROOT}\\workspace`
   }
 
   return {
@@ -55,6 +56,7 @@ function contract(): LaunchContract {
       APPDATA: layout.roaming,
       HERMES_DATA_DIR_SUFFIX: '-clarify-candidate',
       HERMES_DESKTOP_APP_NAME: 'HermesClarifyCandidate-abcdef0',
+      HERMES_DESKTOP_CWD: layout.workspace,
       HERMES_DESKTOP_IGNORE_EXISTING: '1',
       HERMES_DESKTOP_ISOLATED_BACKEND: '1',
       HERMES_DESKTOP_SKIP_PROTOCOL_REGISTRATION: '1',
@@ -177,6 +179,21 @@ describe('the launch contract', () => {
       'a rendezvous directory outside the sandbox',
       (value: LaunchContract) => (value.layout.gatewayLocks = 'C:\\locks'),
       'layout.gatewayLocks'
+    ],
+    [
+      "the user's real home as the assistant's working directory",
+      (value: LaunchContract) => (value.environment.HERMES_DESKTOP_CWD = 'C:\\Users\\runneradmin'),
+      'HERMES_DESKTOP_CWD='
+    ],
+    [
+      'no working directory for the assistant',
+      (value: LaunchContract) => delete value.environment.HERMES_DESKTOP_CWD,
+      'HERMES_DESKTOP_CWD=(unset)'
+    ],
+    [
+      'a workspace outside the sandbox',
+      (value: LaunchContract) => (value.layout.workspace = 'C:\\work'),
+      'layout.workspace'
     ],
     [
       'an XDG state directory',

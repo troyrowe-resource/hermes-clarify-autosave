@@ -78,6 +78,7 @@ import {
   lockDirectories,
   parseLaunchContract,
   processesInside,
+  readAgentCwd,
   readCandidatePackage,
   readHostRecords,
   readMainFacts,
@@ -220,6 +221,7 @@ async function verifyIdentity(run: Run, app: ElectronApplication, page: Page): P
   const exeSha256 = sha256File(pkg.exe)
   const main = await readMainFacts(app)
   const info = await readVersionInfo(page)
+  const agentCwd = await readAgentCwd(page)
 
   const facts = {
     appPathIsAsar: samePath(main.appPath, path.join(pkg.resources, 'app.asar')),
@@ -247,6 +249,9 @@ async function verifyIdentity(run: Run, app: ElectronApplication, page: Page): P
   }
 
   const sandboxed = {
+    // Where the assistant works when a session names no folder; Electron's own fallback is the REAL home on Windows.
+    agentWorkingDirectory: agentCwd,
+    agentWorkingDirectoryIsWorkspace: samePath(agentCwd, layout.workspace),
     appDataInsideSandbox: isInside(layout.root, main.paths.appData),
     hermesHomeIsSandbox: info.hermesHome !== undefined && samePath(info.hermesHome, layout.hermesHome),
     hermesRootInsideSandbox: info.hermesRoot !== undefined && isInside(layout.root, info.hermesRoot),
@@ -286,6 +291,10 @@ async function verifyIdentity(run: Run, app: ElectronApplication, page: Page): P
     'Electron session data and logs are in the sandbox'
   )
   check(sandboxed.tempIsSandbox, `the temp directory ${main.paths.temp} is outside the sandbox`)
+  check(
+    sandboxed.agentWorkingDirectoryIsWorkspace,
+    `the assistant would work in ${agentCwd}, not the sandbox workspace ${layout.workspace}`
+  )
 }
 
 async function verifyBackend(run: Run, app: ElectronApplication, page: Page): Promise<void> {

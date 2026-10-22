@@ -154,6 +154,58 @@ def test_verify_discovers_specs_from_the_directory_when_none_are_named(tmp_path)
     assert any(f"no test from {RESTART}" in problem for problem in json.loads(out.read_text(encoding="utf-8-sig"))["problems"])
 
 
+COMPUTE_HOST = "clarify-drafts-native-compute-host.spec.ts"
+
+
+def _spec_files(tmp_path, *names):
+    specs_dir = tmp_path / "e2e"
+    specs_dir.mkdir(exist_ok=True)
+    for name in names:
+        (specs_dir / name).write_text("", encoding="utf-8")
+    return specs_dir
+
+
+def test_an_excluded_spec_is_neither_expected_in_the_report_nor_listed_to_run(tmp_path, capsys):
+    """The Windows job leaves the compute-host spec to the Linux job: by name, on the command line, never by a glob miss."""
+    specs_dir = _spec_files(tmp_path, evidence.NATIVE_SPEC, RESTART, COMPUTE_HOST, BATCH)
+    directory = _complete_evidence(tmp_path / "native")
+    _extra_evidence(directory, "native-restart")
+    results = tmp_path / "results.json"
+    results.write_text(json.dumps(_multi_report([evidence.NATIVE_SPEC, RESTART, BATCH])), encoding="utf-8")
+    out = tmp_path / "verdict.json"
+    selection = ["--specs-dir", str(specs_dir), "--extra-spec", BATCH, "--exclude-spec", COMPUTE_HOST]
+
+    assert evidence.main(["verify", "--evidence", str(directory), "--results", str(results), "--out", str(out), *selection]) == 0
+    assert sorted(json.loads(out.read_text(encoding="utf-8-sig"))["specs"]) == sorted([evidence.NATIVE_SPEC, RESTART, BATCH])
+
+    # Without the exclusion the same report is incomplete: the spec the glob finds never ran.
+    assert evidence.main(["verify", "--evidence", str(directory), "--results", str(results), "--out", str(out),
+                          "--specs-dir", str(specs_dir), "--extra-spec", BATCH]) == 1
+    assert f"no test from {COMPUTE_HOST}" in capsys.readouterr().err
+
+    # The command line and verify read the same selection.
+    assert evidence.main(["specs", *selection]) == 0
+    assert capsys.readouterr().out.split() == [f"e2e/{name}" for name in (RESTART, evidence.NATIVE_SPEC, BATCH)], (
+        "the glob's specs in name order, then the extras")
+    assert evidence.main(["specs", "--specs-dir", str(specs_dir), "--spec", COMPUTE_HOST]) == 0
+    assert capsys.readouterr().out.split() == [f"e2e/{COMPUTE_HOST}"]
+
+
+def test_a_stale_or_contradictory_exclusion_is_an_error(tmp_path, capsys):
+    specs_dir = _spec_files(tmp_path, evidence.NATIVE_SPEC, COMPUTE_HOST)
+    with pytest.raises(SystemExit) as stale:
+        evidence.main(["specs", "--specs-dir", str(specs_dir), "--exclude-spec", "clarify-drafts-native-renamed.spec.ts"])
+    assert "names no spec" in str(stale.value)
+    with pytest.raises(SystemExit):
+        evidence.main(["specs", "--specs-dir", str(specs_dir), "--spec", COMPUTE_HOST, "--exclude-spec", COMPUTE_HOST])
+    assert "cannot be combined with an explicit --spec" in capsys.readouterr().err
+    with pytest.raises(SystemExit) as stale_guard:
+        evidence.main(["guard", "--specs-dir", str(specs_dir), "--exclude-spec", "clarify-drafts-native-renamed.spec.ts"])
+    assert "names no spec" in str(stale_guard.value)
+    assert evidence.main(["specs", "--specs-dir", str(tmp_path / "empty"), "--spec-glob", "nothing*.ts"]) == 1
+    assert "no spec under" in capsys.readouterr().err
+
+
 BATCH = "batch-clarify.spec.ts"
 
 
@@ -307,6 +359,21 @@ def test_guard_accepts_the_checked_in_fixture_and_rejects_a_missing_flag(tmp_pat
     weakened.write_text(fixture_source.replace(
         "HERMES_DESKTOP_ISOLATED_BACKEND: '1'", "HERMES_DESKTOP_ISOLATED_BACKEND: '0'"), encoding="utf-8")
     assert evidence.main(["guard", "--fixtures", str(weakened), "--spec", str(spec)]) == 1
+
+
+@pytest.mark.parametrize("kept, removed", [
+    ("`--user-data-dir=${userDataDir}`", "`--no-user-data-switch`"),
+    ("...sandboxHomeEnv(", "...homeless("),
+])
+def test_guard_requires_the_switch_and_the_sandboxed_home_the_fixture_must_keep_setting(tmp_path, capsys, kept, removed):
+    fixtures = REPO / "apps" / "desktop" / "e2e" / "fixtures.ts"
+    spec = REPO / "apps" / "desktop" / "e2e" / evidence.NATIVE_SPEC
+    source = fixtures.read_text(encoding="utf-8-sig")
+    assert kept in source
+    weakened = tmp_path / "fixtures.ts"
+    weakened.write_text(source.replace(kept, removed), encoding="utf-8")
+    assert evidence.main(["guard", "--fixtures", str(weakened), "--spec", str(spec)]) == 1
+    assert "E2E fixture isolation missing" in capsys.readouterr().err
 
 
 def _guard(tmp_path, specs: dict[str, str], *extra: str) -> int:
