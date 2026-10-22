@@ -9,9 +9,9 @@
  * scripts the clarify tool call. (`clarify-drafts-packaged-direct.spec.ts` covers the start WITHOUT the launcher.)
  *
  *  1. The shipped launcher's contract is a fully isolated start of THIS executable: one sandbox for every state
- *     location (home, user data, profile, temp and the per-OS-user gateway rendezvous), no real Hermes location
- *     nearby, and none of the decoy variables the harness exports on purpose (a decoy HERMES_HOME, a dev checkout,
- *     a PM Python) reaches the candidate.
+ *     location (home, user data, profile, temp, the per-OS-user gateway rendezvous and the folder the assistant
+ *     works in), no real Hermes location nearby, and none of the decoy variables the harness exports on purpose
+ *     (a decoy HERMES_HOME, a dev checkout, a PM Python) reaches the candidate.
  *  2. It is the packaged app (`app.isPackaged`, loaded from app.asar, the exact exe whose sha256 the manifest names)
  *     under the candidate's own name (never "Hermes"), reporting the commit it was built from, with its Electron
  *     paths inside the sandbox.

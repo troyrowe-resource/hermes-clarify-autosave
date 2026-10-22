@@ -9,7 +9,8 @@ name: Clarify drafts - Windows candidate pipeline
 #                 (apps/desktop/e2e/clarify-drafts-native*.spec.ts and batch-clarify.spec.ts) but the one that is
 #                 POSIX-only in practice, one worker, no retries
 #   compute-host  ubuntu-24.04: that one spec (clarify-drafts-native-compute-host.spec.ts, turn isolation's child
-#                 process) under Xvfb, one worker, no retries, no skips. Linux evidence, never Windows evidence
+#                 process) under Xvfb, one worker, no retries, no skips, and the compute-host Python tests whose
+#                 real-child cases are POSIX-only (skipped on Windows). Linux evidence, never Windows evidence
 #   package       windows-2025, only when all three passed: the unsigned one-commit BUNDLED candidate: the Desktop app
 #                 plus the Python runtime, dependencies and this commit's source it starts, zipped with the launcher
 #                 and a MANIFEST.json. electron-builder runs with --publish never; no signing credential exists here
@@ -250,6 +251,7 @@ jobs:
           selection=()
           for name in $CLARIFY_EXTRA_SPECS; do selection+=(--extra-spec "$name"); done
           for name in $CLARIFY_EXCLUDED_SPECS; do selection+=(--exclude-spec "$name"); done
+          mkdir -p "$CLARIFY_EVIDENCE"
           python -S ../../scripts/clarify_ci/evidence.py specs --specs-dir e2e "${selection[@]}" \
             | tr -d '\r' > "$CLARIFY_EVIDENCE/native-specs.txt"
           mapfile -t specs < "$CLARIFY_EVIDENCE/native-specs.txt"
@@ -373,6 +375,23 @@ jobs:
         timeout-minutes: 15
         run: npm run build
 
+      # The compute-host relay's own Python tests, including the real-child ones that are POSIX-only: Windows skips
+      # them, so no other job runs them. The glob is the file naming, so a later test for it is picked up.
+      - name: Compute-host clarify draft Python tests (including the POSIX-only real-child tests)
+        id: python
+        if: always() && steps.pm.outcome == 'success'
+        timeout-minutes: 10
+        env:
+          HERMES_TEST_FILE_RETRIES: '0'
+        run: |
+          set -euo pipefail
+          mkdir -p "$CLARIFY_EVIDENCE/python"
+          shopt -s nullglob
+          tests=(tests/tui_gateway/test_compute_host*clarify*draft*.py)
+          test "${#tests[@]}" -gt 0
+          printf 'python test file: %s\n' "${tests[@]}"
+          scripts/run_tests.sh "${tests[@]}" -q 2>&1 | tee "$CLARIFY_EVIDENCE/python/run_tests.log"
+
       # Electron needs a display; xvfb-run supplies one. The hosted image carries Xvfb; this only fills a gap.
       - name: Make sure Xvfb is available
         id: xvfb
@@ -458,6 +477,7 @@ jobs:
             --outcome "setup-pm=${{ steps.pm.outcome }}" \
             --outcome "npm-ci=${{ steps.npm.outcome }}" \
             --outcome "desktop-build=${{ steps.build.outcome }}" \
+            --outcome "python-tests=${{ steps.python.outcome }}" \
             --outcome "xvfb=${{ steps.xvfb.outcome }}" \
             --outcome "isolation-preflight=${{ steps.preflight.outcome }}" \
             --outcome "native-e2e=${{ steps.native.outcome }}" \
@@ -802,13 +822,13 @@ jobs:
           exit "$status"
 
       # The safety net: the gateway the app starts outlives it, and a failed run may not have reached the spec's own
-      # stop. The same shipped script, in the shell its .cmd uses; with nothing running it must still exit 0.
+      # stop. The same shipped script, started the way its .cmd starts it; with nothing running it must still exit 0.
       - name: Stop the candidate and its background gateway (launcher run)
         id: launcher-stop
         if: always() && steps.verify-package.outcome == 'success'
         shell: powershell
         run: |
-          & (Join-Path $env:CANDIDATE_DIR 'launcher\Stop-HermesClarifyCandidate.ps1')
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $env:CANDIDATE_DIR 'launcher\Stop-HermesClarifyCandidate.ps1')
           exit $LASTEXITCODE
 
       - name: No real-install location was touched (launcher run)
@@ -898,7 +918,7 @@ jobs:
         if: always() && steps.verify-package.outcome == 'success'
         shell: powershell
         run: |
-          & (Join-Path $env:CANDIDATE_DIR 'launcher\Stop-HermesClarifyCandidate.ps1')
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $env:CANDIDATE_DIR 'launcher\Stop-HermesClarifyCandidate.ps1')
           exit $LASTEXITCODE
 
       - name: No real-install location was touched (direct run)

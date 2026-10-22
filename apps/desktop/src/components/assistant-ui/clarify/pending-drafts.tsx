@@ -72,6 +72,21 @@ export function useClarifyDraftAutosave({
     const local = readClarifyDrafts(draftScope, request.requestId)?.drafts ?? {}
     const remote = request.drafts ?? {}
 
+    // Keystrokes the server never acknowledged (typed offline, or lost in the save pause) go out again each time
+    // the request is delivered. A reconnect usually leaves the card mounted, so this cannot wait for a remount.
+    for (const question of liveQuestions) {
+      const mine = local[question.qid]
+
+      if (
+        mine &&
+        !isBlankDraft(mine) &&
+        request.lockedAnswers?.[question.qid] === undefined &&
+        (remote[question.qid]?.revision ?? 0) < mine.revision
+      ) {
+        resendClarifyDraft(draftScope, request, question.qid, storedSessionId)
+      }
+    }
+
     setStaged(current => {
       const next = { ...current }
 
@@ -91,17 +106,12 @@ export function useClarifyDraftAutosave({
           choices: (question.choices ?? []).filter(choice => best.choices.includes(bareChoice(choice))),
           draft: best.text
         }
-
-        if (local[question.qid] === best && (remote[question.qid]?.revision ?? 0) < best.revision) {
-          // Keystrokes the server never acknowledged (offline, or lost in the save pause).
-          resendClarifyDraft(draftScope, request, question.qid, storedSessionId)
-        }
       }
 
       return next
     })
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per request, and per server replay
-  }, [request?.requestId, request?.drafts, draftKey])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per request, and per delivery (a reconnect replay)
+  }, [request?.requestId, request?.receivedAt, request?.drafts, draftKey])
 
   // Questions the user edited since the last autosave pass.
   const dirtyRef = useRef(new Set<string>())
