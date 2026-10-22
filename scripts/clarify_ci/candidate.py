@@ -361,7 +361,7 @@ def assemble(app: Path, commit: str, template: Path, out_dir: Path, *, max_zip_b
         "signing": {"status": "unsigned",
                     "detail": "No code-signing credential exists in or reaches this pipeline. The product executable "
                               "is not signed by Nous Research or by this repository; Windows will treat the download as "
-                              "untrusted. This is a private candidate, not an official Hermes release."},
+                              "untrusted. This is an unreleased test candidate, not an official Hermes release."},
         "publication": {"status": "disabled", "electron_builder_publish": "never", "github_release": False,
                         "installer": False, "auto_update": "disabled (commit-build stamp: updater is external and refuses)"},
         "verification": {"native_gate": "see the workflow run summary; this manifest is written before acceptance",

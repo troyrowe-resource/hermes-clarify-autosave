@@ -69,6 +69,13 @@
       "summary": "Launcher passed on PowerShell 5.1 and 7. Windows native 19 expected, 0 unexpected, 0 skipped, 0 flaky, evidence verdict passed. Windows Python 29 files, 428 passed, 0 failed, 7 skipped (6 POSIX-only, 1 symlink-privilege). Linux compute-host native 2/2 and Python passed. Isolation passed. The package job failed: its bundled prepare step timed out at the 25-minute cap on a cold dependency cache (npm ci about 9.5 minutes, tools about 3.5, all-extras venv about 8); the budget was raised to 38 minutes in e7dc1f9b."
     },
     {
+      "run_url": "https://github.com/troyrowe-resource/hermes-clarify-autosave/actions/runs/39788905289",
+      "commit": "e7dc1f9b42ab5c01de1d6e9faf093bf3f3c16d0b",
+      "conclusion": "package job failed; launcher, Windows native and Linux compute-host jobs passed",
+      "role": "full run",
+      "summary": "Launcher passed on PowerShell 5.1 and 7. Windows native 19 expected, 0 unexpected, 0 skipped, 0 flaky, evidence verdict passed. Windows Python 29 files, 428 passed, 0 failed, 7 skipped (6 POSIX-only, 1 symlink-privilege). Linux compute-host native 2/2 and Python 2 files, 39 passed. Isolation passed. The package job failed: with the 38-minute budget the cold prepare finished (28 min 23 s), electron-builder built the bundled app and the audit passed it (115,772 files, 6,528,066,077 bytes), but assembly refused the deflate-1 zip at 3,224,609,056 bytes, 3.4 MB over the 3072 MiB guard; the guard was raised to 4096 MiB in 1ba6a599. No candidate was uploaded and the accept job did not run."
+    },
+    {
       "run_url": "{{RUN7_URL}}",
       "run_id": "{{RUN7_ID}}",
       "commit": "{{RUN7_COMMIT}}",

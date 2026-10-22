@@ -19,7 +19,7 @@ name: Clarify drafts - Windows candidate pipeline
 #                 Start-HermesClarifyCandidate.cmd (clarify-drafts-packaged.spec.ts, the full scenario in a sandbox)
 #                 and started directly, as a double-click would (clarify-drafts-packaged-direct.spec.ts)
 #
-# Evidence stays private for 7 days: clarify-windows-* (native), clarify-linux-* (compute-host), clarify-candidate-*
+# Evidence is kept 7 days, downloadable by any signed-in GitHub user (a public repository): clarify-windows-* (native), clarify-linux-* (compute-host), clarify-candidate-*
 # (the zip, MANIFEST.json, SHA256SUMS.txt), clarify-package-evidence-*, clarify-acceptance-*. A green run on a clean
 # GitHub runner is not proof for any other machine; the acceptance verdict says exactly what it covers.
 
@@ -695,7 +695,7 @@ jobs:
         run: |
           python -S scripts/clarify_ci/evidence.py gate \
             --title "Clarify drafts: unsigned Windows candidate package" \
-            --note "Unsigned, private, never published: ${ZIP_NAME:-no archive} sha256 ${ZIP_SHA256:-none} (artifact digest ${ARTIFACT_DIGEST:-none}). Acceptance of these bytes is the next job." \
+            --note "Unsigned, never released or published: ${ZIP_NAME:-no archive} sha256 ${ZIP_SHA256:-none} (artifact digest ${ARTIFACT_DIGEST:-none}). Acceptance of these bytes is the next job." \
             --verify "$CLARIFY_EVIDENCE/candidate-audit.json" \
             --outcome "clone=${{ steps.clone.outcome }}" \
             --outcome "prepare=${{ steps.prepare.outcome }}" \
@@ -1011,7 +1011,7 @@ jobs:
         run: |
           python -S scripts/clarify_ci/evidence.py gate \
             --title "Clarify drafts: packaged-bytes acceptance (unsigned Windows candidate)" \
-            --note "Acceptance of ${ZIP_NAME:-no archive} sha256 ${ZIP_SHA256:-none}, extracted from the uploaded artifact on a clean GitHub-hosted windows-2025 x64 runner, run through its shipped launcher and started directly. Unsigned, private, never published. It does not show the candidate works on any other machine, with a real provider or server, or beside an installed Hermes." \
+            --note "Acceptance of ${ZIP_NAME:-no archive} sha256 ${ZIP_SHA256:-none}, extracted from the uploaded artifact on a clean GitHub-hosted windows-2025 x64 runner, run through its shipped launcher and started directly. Unsigned, never released or published. It does not show the candidate works on any other machine, with a real provider or server, or beside an installed Hermes." \
             --verify "$CLARIFY_EVIDENCE/acceptance-verdict.json" \
             --outcome "setup-node=${{ steps.pm.outcome }}" \
             --outcome "npm-ci=${{ steps.npm.outcome }}" \

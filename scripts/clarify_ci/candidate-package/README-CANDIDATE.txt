@@ -1,7 +1,7 @@
 HERMES CLARIFY-AUTOSAVE CANDIDATE @SHA7@
 =========================================
 
-UNSIGNED. PRIVATE. NOT AN OFFICIAL HERMES RELEASE.
+UNSIGNED TEST BUILD. NOT AN OFFICIAL HERMES RELEASE.
 
 This is a one-commit test build of Hermes Desktop that preserves unfinished
 clarification text and choices through timeout, reconnect and restart. It is
