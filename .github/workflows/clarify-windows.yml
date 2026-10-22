@@ -561,10 +561,13 @@ jobs:
           cache: C:/hsb/.cache/desktop-inputs
           producer: desktop
 
+      # A cold dependency cache measured ~27 min here on windows-2025 (run 39780275912: npm ci for three
+      # workspaces ~9.5 min, tool staging ~3.5 min, the all-extras venv ~8 min) and timed out at 25. The
+      # cache is saved only after a successful prepare, so a warm re-dispatch is much faster.
       - name: Prepare the complete desktop build (one-commit bundled variant)
         id: prepare
         working-directory: C:/hsb
-        timeout-minutes: 25
+        timeout-minutes: 38
         run: |
           set -euo pipefail
           python scripts/bundles/desktop.py --commit "$GITHUB_SHA" --variant bundled --prepare-only \
