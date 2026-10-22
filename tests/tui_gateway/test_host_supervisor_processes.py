@@ -32,6 +32,10 @@ def _supervisor(tmp_path, argv: list[str] | None = None) -> HostSupervisor:
 
 
 def _gone(pid: int) -> bool:
+    # pid_exists reads the exit code; on Windows Process(pid) still opens an exited process whose
+    # handle someone holds (the first supervisor's Popen holds its child's) and reports it running.
+    if not psutil.pid_exists(pid):
+        return True
     try:
         return psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
     except psutil.NoSuchProcess:
