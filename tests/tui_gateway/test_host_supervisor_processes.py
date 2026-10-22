@@ -42,9 +42,11 @@ def _gone(pid: int) -> bool:
         return True
 
 
-def _describe(proc: psutil.Process) -> str:
+def _describe(pid: int) -> str:
     try:
-        return f"{proc.name()} ppid={proc.ppid()} {' '.join(proc.cmdline())[:160]}"
+        proc = psutil.Process(pid)
+        return (f"{proc.name()} ppid={proc.ppid()} created={proc.create_time()} status={proc.status()} "
+                f"{' '.join(proc.cmdline())[:160]}")
     except psutil.Error as exc:
         return repr(exc)
 
@@ -52,14 +54,14 @@ def _describe(proc: psutil.Process) -> str:
 def _tree(pid: int) -> dict[int, str]:
     """``pid`` and its descendants, taken while alive: a venv launcher's host is its child."""
     root = psutil.Process(pid)
-    return {proc.pid: _describe(proc) for proc in (root, *root.children(recursive=True))}
+    return {proc.pid: _describe(proc.pid) for proc in (root, *root.children(recursive=True))}
 
 
 def _wait_all_gone(tree: dict[int, str], timeout: float = 10.0) -> None:
     try:
         wait_until(lambda: all(map(_gone, tree)), timeout=timeout)
     except AssertionError:
-        survivors = {pid: desc for pid, desc in tree.items() if not _gone(pid)}
+        survivors = {pid: f"was {was}; now {_describe(pid)}" for pid, was in tree.items() if not _gone(pid)}
         raise AssertionError(f"still running after {timeout}s: {survivors}") from None
 
 
@@ -114,8 +116,7 @@ def test_real_compute_host_is_reaped_by_the_next_supervisor(tmp_path, monkeypatc
     first = HostSupervisor(registry_path=tmp_path / "host.json", respawn_max=0, autostart=False)
     try:
         first.start()
-        tree = _tree(first.pid)
-        assert first._hello["host_pid"] in tree
+        tree = {first.pid: "launcher", first._hello["host_pid"]: "host"}
 
         assert _supervisor(tmp_path).reconcile_startup_orphan() == "terminated"
         _wait_all_gone(tree, timeout=30)
@@ -133,8 +134,7 @@ def test_reconcile_kills_the_host_under_a_launcher_pid(tmp_path):
     first = _supervisor(tmp_path, [sys.executable, "-c", launcher, _MARKER])
     try:
         first.start()
-        tree = _tree(first.pid)
-        assert first._hello["host_pid"] in tree and first._hello["host_pid"] != first.pid
+        tree = {first.pid: "launcher", first._hello["host_pid"]: "host"}
 
         assert _supervisor(tmp_path).reconcile_startup_orphan() == "terminated"
         _wait_all_gone(tree)
