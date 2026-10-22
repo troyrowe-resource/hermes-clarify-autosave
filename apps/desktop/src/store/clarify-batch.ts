@@ -19,11 +19,19 @@ import { atom } from 'nanostores'
  *
  * The memory is bounded: a runtime upgrade restarts the owner under the same route, so the key is offered
  * again after the TTL instead of staying off until the app is reloaded.
+ *
+ * An edit, a regenerate and a restore are different: the canonical client sends the owner's `session.rewind` and
+ * THEN the submit, so a refused submit cannot be resent (it would rewind a second time, against rows the first
+ * rewind already replaced). {@link submitKnownClarifyBatch} offers them the key only after an ordinary submit proved
+ * the owner takes it, and never resends.
  */
 export const REFUSAL_TTL_MS = 10 * 60_000
 
 /** Owner scope key (`SubmissionDestination.scopeKey`) → epoch ms until which the owner is treated as not batching. */
 export const $clarifyBatchRefusals = atom<Record<string, number>>({})
+
+/** Owner scope keys whose owner accepted a submit that carried the key: proof it takes it. A refusal removes it. */
+export const $clarifyBatchAccepted = atom<Record<string, true>>({})
 
 /** Whether the owner this submit goes to should be offered `clarify_batch`. */
 export function offerClarifyBatch(canonicalOwner: boolean, scopeKey: string, now = Date.now()): boolean {
@@ -52,6 +60,13 @@ export function isClarifyBatchRefusal(error: unknown): boolean {
 function rememberRefusal(scopeKey: string, now: number): void {
   console.warn('[clarify-batch] owner refused clarify_batch; its clarify questions stay one card each', { scopeKey })
   $clarifyBatchRefusals.set({ ...$clarifyBatchRefusals.get(), [scopeKey]: now + REFUSAL_TTL_MS })
+  $clarifyBatchAccepted.set(Object.fromEntries(Object.entries($clarifyBatchAccepted.get()).filter(([key]) => key !== scopeKey)))
+}
+
+function rememberAcceptance(scopeKey: string): void {
+  if (!$clarifyBatchAccepted.get()[scopeKey]) {
+    $clarifyBatchAccepted.set({ ...$clarifyBatchAccepted.get(), [scopeKey]: true })
+  }
 }
 
 /**
@@ -68,7 +83,11 @@ export async function submitWithClarifyBatch<T>(
   }
 
   try {
-    return await send({ ...params, clarify_batch: true })
+    const accepted = await send({ ...params, clarify_batch: true })
+
+    rememberAcceptance(owner.scopeKey)
+
+    return accepted
   } catch (error) {
     if (!isClarifyBatchRefusal(error)) {
       throw error
@@ -83,7 +102,33 @@ export async function submitWithClarifyBatch<T>(
   return accepted
 }
 
-/** Tests: forget every remembered refusal. */
+/**
+ * `prompt.submit` for a path that cannot be resent after a refusal (an edit, a regenerate, a restore: see the top of
+ * this file). The key is offered only to an owner that already accepted it; a refusal after all (the owner was replaced
+ * by an older one) is remembered, so the key is not offered again, and surfaces unchanged.
+ */
+export async function submitKnownClarifyBatch<T>(
+  owner: { canonical: boolean; scopeKey: string },
+  params: Record<string, unknown>,
+  send: (params: Record<string, unknown>) => Promise<T>
+): Promise<T> {
+  if (!offerClarifyBatch(owner.canonical, owner.scopeKey) || !$clarifyBatchAccepted.get()[owner.scopeKey]) {
+    return send(params)
+  }
+
+  try {
+    return await send({ ...params, clarify_batch: true })
+  } catch (error) {
+    if (isClarifyBatchRefusal(error)) {
+      rememberRefusal(owner.scopeKey, Date.now())
+    }
+
+    throw error
+  }
+}
+
+/** Tests: forget every remembered refusal and acceptance. */
 export function resetClarifyBatchForTests(): void {
   $clarifyBatchRefusals.set({})
+  $clarifyBatchAccepted.set({})
 }

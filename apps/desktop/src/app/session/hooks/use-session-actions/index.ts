@@ -35,6 +35,7 @@ import { recoverInFlightTurnJournal } from '@/lib/inflight-turn-journal'
 import { latestSessionTodoSnapshot } from '@/lib/todos'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
+import { submitWithClarifyBatch } from '@/store/clarify-batch'
 import { announceGoneSessionDraft, announceNewSessionDraftKey, migrateSessionDraft } from '@/store/composer'
 import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue'
 import { resetSessionBackground } from '@/store/composer-status'
@@ -152,6 +153,7 @@ import {
   sessionContextDrift
 } from '../session-context-drift'
 import { singleFlightSessionResume } from '../use-prompt-actions/single-flight-resume'
+import { clarifyBatchOwner } from '../use-prompt-actions/submission-destination'
 
 import { branchThroughRowId } from './branch-boundary'
 import { branchCreateKey } from './branch-create-key'
@@ -927,7 +929,12 @@ export function useSessionActions({
         // Submit the exact runtime id returned by session.create so this
         // atomic path cannot fall back to a route token (#85590).
         try {
-          await requestGateway('prompt.submit', { session_id: created.session_id, text })
+          // The turn may ask clarify questions like any other: offered the batch form as a normal submit is.
+          await submitWithClarifyBatch(
+            clarifyBatchOwner(stored),
+            { session_id: created.session_id, text },
+            sent => requestGateway('prompt.submit', sent)
+          )
         } catch (error) {
           // A refused prompt leaves no turn behind, so its bubble and spinner go too.
           updateSessionState(

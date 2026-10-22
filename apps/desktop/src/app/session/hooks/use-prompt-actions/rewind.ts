@@ -22,8 +22,10 @@ import {
   hasUnresolvedToolCall,
   textPart
 } from '@/lib/chat-messages'
+import { submitKnownClarifyBatch } from '@/store/clarify-batch'
 import type { ConfirmRequest } from '@/store/confirm'
 
+import { clarifyBatchOwner } from './submission-destination'
 import {
   appendText,
   isFailedUserTurn,
@@ -344,8 +346,10 @@ export async function runRewindSubmit(
   }
 
   const submitFor = (targetId: string) =>
-    requestGateway<PromptSubmitResult>(
-      'prompt.submit',
+    // The turn this starts may ask clarify questions like any other; `submitKnownClarifyBatch` says why this path
+    // only offers the batch form to an owner that already took it.
+    submitKnownClarifyBatch(
+      clarifyBatchOwner(recovery?.storedSessionId ?? targetId),
       {
         session_id: targetId,
         text,
@@ -363,7 +367,7 @@ export async function runRewindSubmit(
           ? { rebind_survivor_row_ids: [...new Set(rebindRowIds.filter(Number.isInteger))] }
           : {})
       },
-      PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
+      sent => requestGateway<PromptSubmitResult>('prompt.submit', sent, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
     )
 
   const submit = async () => {

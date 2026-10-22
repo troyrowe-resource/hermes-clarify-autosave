@@ -4,7 +4,7 @@ import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
-import { clearClarifyRequest, type ClarifyRequest } from '@/store/clarify'
+import { type ClarifyRequest, clearClarifyRequest } from '@/store/clarify'
 import {
   readClarifyDrafts,
   recordClarifyDraft,
@@ -102,6 +102,7 @@ interface Deferred<T> {
 
 function deferred<T>(): Deferred<T> {
   let resolve!: (value: T) => void
+
   const promise = new Promise<T>(settle => {
     resolve = settle
   })

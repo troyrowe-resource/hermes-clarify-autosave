@@ -14,6 +14,7 @@ import {
 import { translateNow } from '@/i18n/runtime'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import { markReasoningEffortPending } from '@/lib/chat-runtime'
+import { submitWithClarifyBatch } from '@/store/clarify-batch'
 import { noteMessageSent } from '@/store/desktop-metrics'
 import { notify } from '@/store/notifications'
 import {
@@ -40,6 +41,7 @@ import type { SessionResumeResult } from '@/types/hermes'
 import { refreshCronRunWriteGate } from '../../cron/open-cron-run'
 import type { usePromptActions } from '../../session/hooks/use-prompt-actions'
 import { singleFlightSessionResume } from '../../session/hooks/use-prompt-actions/single-flight-resume'
+import { clarifyBatchOwner } from '../../session/hooks/use-prompt-actions/submission-destination'
 import { markSessionRecentlyInterrupted, withSessionNotFoundResume } from '../../session/hooks/use-prompt-actions/utils'
 import type { useSessionActions } from '../../session/hooks/use-session-actions'
 import {
@@ -581,7 +583,13 @@ export function useSessionTileDelegate({
         await withSessionNotFoundResume(
           runtimeId,
           storedSessionId,
-          liveId => routedRequest('prompt.submit', { session_id: liveId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS),
+          liveId =>
+            // The turn may ask clarify questions like any other: offered the batch form as a normal submit is.
+            submitWithClarifyBatch(
+              clarifyBatchOwner(storedSessionId ?? liveId),
+              { session_id: liveId, text },
+              sent => routedRequest('prompt.submit', sent, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+            ),
           {
             requestGateway: routedRequest,
             onRecovered: recoveredId => {

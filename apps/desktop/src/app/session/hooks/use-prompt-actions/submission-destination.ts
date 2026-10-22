@@ -1,3 +1,4 @@
+import { serverOwnsComposerQueue } from '@/store/composer-queue'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection } from '@/store/session'
 import {
@@ -15,6 +16,26 @@ export interface SubmissionDestination {
   readonly scopeKey: string
   readonly owner: SessionOwnerScope
   readonly requestGateway: GatewayRequest
+}
+
+/** The scope a submit's destination is keyed by: its owner's route, else the ambient connection and profile. */
+function submissionScopeKey(owner: SessionOwnerScope, profile = $activeGatewayProfile.get()): string {
+  const connection = $connection.get()
+
+  return JSON.stringify(
+    owner && typeof owner === 'object'
+      ? [owner.connectionId, owner.profile]
+      : [connection?.connectionId ?? connection?.baseUrl ?? null, profile]
+  )
+}
+
+/**
+ * What a `clarify_batch` offer (`store/clarify-batch.ts`) needs to know about a submit to this session: whether its
+ * owner is canonical, and the scope its refusals are remembered under, which is the destination's own scope. For
+ * the submit paths that do not capture a destination (an edit, a quick-entry send).
+ */
+export function clarifyBatchOwner(sessionId: string | null | undefined): { canonical: boolean; scopeKey: string } {
+  return { canonical: serverOwnsComposerQueue(sessionId), scopeKey: submissionScopeKey(knownOwnerForSession(sessionId)) }
 }
 
 /** Capture before preprocessing, not when the prepared payload finally sends.
@@ -64,16 +85,8 @@ export function captureSubmissionDestination(
     return timeoutMs === undefined ? request(method, params) : request(method, params, timeoutMs)
   }
 
-  const connection = $connection.get()
-
-  const scopeKey = JSON.stringify(
-    owner && typeof owner === 'object'
-      ? [owner.connectionId, owner.profile]
-      : [connection?.connectionId ?? connection?.baseUrl ?? null, profile]
-  )
-
   const destination = Object.freeze({
-    scopeKey,
+    scopeKey: submissionScopeKey(owner, profile),
     owner,
     requestGateway: <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) =>
       typeof owner === 'object' && owner !== null

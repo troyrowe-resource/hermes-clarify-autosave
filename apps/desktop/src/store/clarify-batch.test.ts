@@ -2,11 +2,13 @@ import { JsonRpcGatewayError } from '@hermes/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  $clarifyBatchAccepted,
   $clarifyBatchRefusals,
   isClarifyBatchRefusal,
   offerClarifyBatch,
   REFUSAL_TTL_MS,
   resetClarifyBatchForTests,
+  submitKnownClarifyBatch,
   submitWithClarifyBatch
 } from './clarify-batch'
 
@@ -129,5 +131,80 @@ describe('submitWithClarifyBatch', () => {
 
     vi.advanceTimersByTime(REFUSAL_TTL_MS + 1)
     expect(offerClarifyBatch(true, OWNER.scopeKey)).toBe(true)
+  })
+})
+
+describe('what the owner has accepted', () => {
+  it('is remembered when a submit that carried the key was accepted, and forgotten when the owner refuses it', async () => {
+    await submitWithClarifyBatch(OWNER, { submission_id: 'sub-1' }, async sent => sent)
+    expect($clarifyBatchAccepted.get()).toEqual({ [OWNER.scopeKey]: true })
+
+    // The owner was replaced by an older one that predates the field.
+    $clarifyBatchRefusals.set({})
+
+    const send = vi.fn(async (sent: Record<string, unknown>) => {
+      if ('clarify_batch' in sent) {
+        throw refusal(['clarify_batch'])
+      }
+
+      return sent
+    })
+
+    await submitWithClarifyBatch(OWNER, { submission_id: 'sub-2' }, send)
+    expect($clarifyBatchAccepted.get()).toEqual({})
+  })
+
+  it('is not taken from a submit that was sent without the key', async () => {
+    await submitWithClarifyBatch({ ...OWNER, canonical: false }, { submission_id: 'sub-1' }, async sent => sent)
+    expect($clarifyBatchAccepted.get()).toEqual({})
+  })
+})
+
+describe('submitKnownClarifyBatch (a submit that cannot be resent)', () => {
+  it('sends the plain form to an owner that has not accepted the key, and learns nothing from it', async () => {
+    const send = vi.fn(async (sent: Record<string, unknown>) => sent)
+
+    await submitKnownClarifyBatch(OWNER, { text: 'hi' }, send)
+
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(send.mock.calls[0][0]).not.toHaveProperty('clarify_batch')
+    expect($clarifyBatchAccepted.get()).toEqual({})
+  })
+
+  it('offers the key to an owner that accepted it, leaving the caller params untouched', async () => {
+    await submitWithClarifyBatch(OWNER, { submission_id: 'sub-1' }, async sent => sent)
+    const params = { text: 'hi' }
+    const send = vi.fn(async (sent: Record<string, unknown>) => sent)
+
+    await expect(submitKnownClarifyBatch(OWNER, params, send)).resolves.toMatchObject({ clarify_batch: true })
+    expect(params).not.toHaveProperty('clarify_batch')
+  })
+
+  it('never offers it to a non-canonical owner, or to one that refused it', async () => {
+    await submitWithClarifyBatch(OWNER, { submission_id: 'sub-1' }, async sent => sent)
+    const send = vi.fn(async (sent: Record<string, unknown>) => sent)
+
+    await submitKnownClarifyBatch({ ...OWNER, canonical: false }, {}, send)
+    $clarifyBatchRefusals.set({ [OWNER.scopeKey]: Date.now() + REFUSAL_TTL_MS })
+    await submitKnownClarifyBatch(OWNER, {}, send)
+
+    send.mock.calls.forEach(([sent]) => expect(sent).not.toHaveProperty('clarify_batch'))
+  })
+
+  it('does not resend a refusal: it is remembered, surfaced unchanged, and the key is not offered again', async () => {
+    await submitWithClarifyBatch(OWNER, { submission_id: 'sub-1' }, async sent => sent)
+
+    const send = vi.fn(async (sent: Record<string, unknown>) => {
+      if ('clarify_batch' in sent) {
+        throw refusal(['clarify_batch'])
+      }
+
+      return sent
+    })
+
+    await expect(submitKnownClarifyBatch(OWNER, { text: 'hi' }, send)).rejects.toMatchObject({ code: 4001 })
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(offerClarifyBatch(true, OWNER.scopeKey)).toBe(false)
+    expect($clarifyBatchAccepted.get()).toEqual({})
   })
 })

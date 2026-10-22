@@ -137,7 +137,9 @@ function useClarifyDraftRecall(
     listing: recall.status === 'ok' && !exactRequestId ? recall.records : null,
     recall,
     recallNow,
-    unavailable: recall.status === 'unavailable' || ownerUnavailable
+    // The owner's memory is the one authority: it is set by the very reply that says so, and it lapses (a card's own
+    // kept outcome must not outlive it).
+    unavailable: ownerUnavailable
   }
 }
 
