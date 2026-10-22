@@ -16,6 +16,9 @@
  *     backend the recall finds nothing, and nothing was ever submitted.
  */
 
+import * as fs from 'node:fs'
+import * as path from 'node:path'
+
 import { MIXED_CLARIFY_TRIGGER } from '../../../tests-js/scripts/mock-server'
 
 import {
@@ -160,7 +163,11 @@ test.describe('clarify drafts (native, restart, fresh backend and discard)', () 
     expect(clarifyToolResults(mock, 0)).toHaveLength(1)
     expect(serverDraftRecords(sandbox.hermesHome).map(entry => entry.requestId)).toEqual([stored.requestId])
 
+    // What the daemon recorded about itself (its pid and its canonical HERMES_HOME), kept as evidence.
+    const lockFile = path.join(sandbox.hermesHome, 'gateway.lock')
+
     observations.appRestart = {
+      gatewayLock: fs.existsSync(lockFile) ? fs.readFileSync(lockFile, 'utf8') : null,
       gatewayPidAfter: sandboxGatewayPid(sandbox.hermesHome),
       gatewayPidBefore: pidBefore,
       rows
