@@ -1,24 +1,27 @@
 'use client'
 
 import { useStore } from '@nanostores/react'
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { Button } from '@/components/ui/button'
 import { CopyButton } from '@/components/ui/copy-button'
 import { useI18n } from '@/i18n'
 import {
+  $clarifyDraftCardDiscards,
+  $clarifyDraftCardRecalls,
   $clarifyDraftRecallUnavailable,
+  clarifyDraftCardKey,
   clarifyDraftDeviceStored,
-  type ClarifyDraftDiscardResult,
+  type ClarifyDraftDiscardState,
   clarifyDraftOwnerKey,
-  type ClarifyDraftRecall,
+  type ClarifyDraftRecallState,
   type ClarifyDraftScope,
   clarifyDraftsText,
-  discardClarifyDrafts,
+  discardClarifyDraftsForCard,
   findClarifyDraftsForCard,
   isBlankDraft,
-  recallServerClarifyDrafts,
+  recallClarifyDraftsForCard,
   resolveClarifyDraftScope,
   type ServerClarifyDraftRecord
 } from '@/store/clarify-drafts'
@@ -74,7 +77,7 @@ function DraftRows({ deviceOnly, rows }: { deviceOnly: boolean; rows: DraftRow[]
   )
 }
 
-type RecallState = ClarifyDraftRecall | { status: 'idle' } | { status: 'loading' }
+const IDLE: ClarifyDraftRecallState = { status: 'idle' }
 
 /**
  * The settled card's exact draft identity: this view's owner gateway + profile +
@@ -97,7 +100,11 @@ function useSettledDraftIdentity(requestId: string | undefined, toolCallId: stri
   )
 
   // The exact request this card settled: its result's / live id, else the device copy's exact association.
-  return { device, exactRequestId: requestId ?? device?.requestId ?? null, runtimeId, scope }
+  const exactRequestId = requestId ?? device?.requestId ?? null
+
+  // What the card's recall and discard have done is kept under this key, not in the component: the card is mounted
+  // again when its message is replaced at the end of a turn.
+  return { cardKey: clarifyDraftCardKey(scope, exactRequestId, toolCallId), device, exactRequestId, runtimeId, scope }
 }
 
 /**
@@ -108,20 +115,23 @@ function useSettledDraftIdentity(requestId: string | undefined, toolCallId: stri
 function useClarifyDraftRecall(
   scope: ClarifyDraftScope | null,
   runtimeId: null | string,
-  exactRequestId: null | string
+  exactRequestId: null | string,
+  cardKey: null | string
 ) {
   const recallUnavailable = useStore($clarifyDraftRecallUnavailable)
-  const [recall, setRecall] = useState<RecallState>({ status: 'idle' })
+  const recalls = useStore($clarifyDraftCardRecalls)
+  const recall = (cardKey && recalls[cardKey]) || IDLE
   const ownerUnavailable = Boolean(scope && recallUnavailable[clarifyDraftOwnerKey(scope)])
   const exactRecord = recall.status === 'ok' && exactRequestId ? (recall.records[0] ?? null) : null
 
-  const recallNow = async () => {
-    setRecall({ status: 'loading' })
-    setRecall(await recallServerClarifyDrafts(scope, runtimeId, exactRequestId))
+  const recallNow = () => {
+    if (cardKey) {
+      void recallClarifyDraftsForCard(cardKey, scope, runtimeId, exactRequestId)
+    }
   }
 
   return {
-    canRecall: Boolean(scope && runtimeId) && !ownerUnavailable && !exactRecord,
+    canRecall: Boolean(cardKey && runtimeId) && !ownerUnavailable && !exactRecord,
     exactRecord,
     listing: recall.status === 'ok' && !exactRequestId ? recall.records : null,
     recall,
@@ -143,7 +153,7 @@ function DraftRecallControls({ exactRequestId, recall }: { exactRequestId: null 
       {recall.canRecall ? (
         <Button
           disabled={status === 'loading'}
-          onClick={() => void recall.recallNow()}
+          onClick={recall.recallNow}
           size="micro"
           type="button"
           variant="ghost"
@@ -171,10 +181,8 @@ function DraftRecallControls({ exactRequestId, recall }: { exactRequestId: null 
   )
 }
 
-type DiscardState = ClarifyDraftDiscardResult | 'pending' | null
-
 /** Exactly what a discard removed (never more than the server confirmed). */
-function DiscardedNotice({ discarded }: { discarded: Exclude<DiscardState, null> }) {
+function DiscardedNotice({ discarded }: { discarded: ClarifyDraftDiscardState }) {
   const { t } = useI18n()
   const copy = t.assistant.clarify
 
@@ -250,9 +258,10 @@ export function ClarifyDrafts({
 }) {
   const { t } = useI18n()
   const copy = t.assistant.clarify
-  const { device, exactRequestId, runtimeId, scope } = useSettledDraftIdentity(requestId, toolCallId)
-  const recall = useClarifyDraftRecall(scope, runtimeId, exactRequestId)
-  const [discarded, setDiscarded] = useState<DiscardState>(null)
+  const { cardKey, device, exactRequestId, runtimeId, scope } = useSettledDraftIdentity(requestId, toolCallId)
+  const recall = useClarifyDraftRecall(scope, runtimeId, exactRequestId, cardKey)
+  const discards = useStore($clarifyDraftCardDiscards)
+  const discarded = (cardKey && discards[cardKey]) || null
 
   const rows = reconcileRows(responses, {
     device,
@@ -261,9 +270,10 @@ export function ClarifyDrafts({
     terminalDurable: serverDraftsDurable
   })
 
-  const discardNow = async () => {
-    setDiscarded('pending')
-    setDiscarded(await discardClarifyDrafts(scope, exactRequestId ?? '', runtimeId))
+  const discardNow = () => {
+    if (cardKey) {
+      void discardClarifyDraftsForCard(cardKey, scope, exactRequestId ?? '', runtimeId)
+    }
   }
 
   if (!responses.some(row => row.unanswered)) {
@@ -300,7 +310,7 @@ export function ClarifyDrafts({
         canDiscard={Boolean(exactRequestId && (device || recall.exactRecord))}
         deviceOnly={deviceOnly}
         memoryOnly={memoryOnly}
-        onDiscard={() => void discardNow()}
+        onDiscard={discardNow}
         rows={rows}
       />
       <DraftRows deviceOnly={deviceOnly} rows={rows} />

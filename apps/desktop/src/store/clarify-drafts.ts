@@ -1,4 +1,4 @@
-import { atom } from 'nanostores'
+import { atom, type WritableAtom } from 'nanostores'
 
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 
@@ -834,6 +834,76 @@ export async function recallServerClarifyDrafts(
   }
 }
 
+// ── What a settled card's explicit actions have done ───────────────────────
+
+/**
+ * A settled card is a React component, and it does not outlive its message: when a turn ends the live message is
+ * replaced by the stored one (another id, so another key) and every card in it is mounted again. Recall and discard
+ * are asynchronous, so one the user started a moment before would finish on a component that is gone while the card
+ * that replaced it offered the same action as if nothing had happened. Their state is kept here instead, under the
+ * card's identity, so a card mounted again reads the read that is still in flight, or its outcome.
+ */
+export type ClarifyDraftRecallState = ClarifyDraftRecall | { status: 'idle' } | { status: 'loading' }
+
+export type ClarifyDraftDiscardState = 'pending' | ClarifyDraftDiscardResult
+
+export const $clarifyDraftCardRecalls = atom<Record<string, ClarifyDraftRecallState>>({})
+
+export const $clarifyDraftCardDiscards = atom<Record<string, ClarifyDraftDiscardState>>({})
+
+/**
+ * The identity of one settled card: its complete scope plus the exact request it settled or, when its result names
+ * none, the tool call that rendered it. Never question text: identical batches recur. Null without a scope.
+ */
+export function clarifyDraftCardKey(
+  scope: ClarifyDraftScope | null,
+  requestId: null | string,
+  toolCallId?: null | string
+): null | string {
+  if (!scope) {
+    return null
+  }
+
+  if (requestId) {
+    return clarifyDraftKey(scope, requestId)
+  }
+
+  return toolCallId ? `${clarifyDraftKey(scope, '')}\u0000tool\u0000${toolCallId}` : null
+}
+
+const setCardState = <T>(store: WritableAtom<Record<string, T>>, key: string, state: T): void =>
+  store.set({ ...store.get(), [key]: state })
+
+/** Read the card's durable drafts (`clarify.drafts`), one read at a time; the outcome stays under the card's key. */
+export async function recallClarifyDraftsForCard(
+  key: string,
+  scope: ClarifyDraftScope | null,
+  sessionId: null | string,
+  requestId: null | string
+): Promise<void> {
+  if ($clarifyDraftCardRecalls.get()[key]?.status === 'loading') {
+    return
+  }
+
+  setCardState($clarifyDraftCardRecalls, key, { status: 'loading' })
+  setCardState($clarifyDraftCardRecalls, key, await recallServerClarifyDrafts(scope, sessionId, requestId))
+}
+
+/** Discard the card's drafts (`discardClarifyDrafts`); what it removed stays under the card's key. */
+export async function discardClarifyDraftsForCard(
+  key: string,
+  scope: ClarifyDraftScope | null,
+  requestId: string,
+  sessionId: null | string
+): Promise<void> {
+  setCardState($clarifyDraftCardDiscards, key, 'pending')
+  // What is being removed must not stay readable: drop the record this card recalled.
+  $clarifyDraftCardRecalls.set(
+    Object.fromEntries(Object.entries($clarifyDraftCardRecalls.get()).filter(([held]) => held !== key))
+  )
+  setCardState($clarifyDraftCardDiscards, key, await discardClarifyDrafts(scope, requestId, sessionId))
+}
+
 /** The newer of two copies of one question's draft, by revision (a tie keeps this device's). */
 export function newestClarifyDraft(
   device?: ClarifyDraftEntry,
@@ -944,4 +1014,6 @@ export function resetClarifyDraftsForTests(): void {
   $clarifyDraftServerState.set({})
   $clarifyDraftStatus.set({})
   $clarifyDraftRecallUnavailable.set({})
+  $clarifyDraftCardRecalls.set({})
+  $clarifyDraftCardDiscards.set({})
 }

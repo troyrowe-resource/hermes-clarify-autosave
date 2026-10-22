@@ -9,9 +9,11 @@
   directory, the folder the assistant works in by default, and a temp directory.
 
   It refuses to start (exit 2) when the sandbox would be, sit inside, or contain a real Hermes location of the
-  current user, and (exit 3/4) when the package is damaged or is not a one-commit bundled build whose updater
-  is disabled. It never registers the hermes:// handler, never attaches to an installed Hermes backend, and
-  never touches an installed Hermes app, its updater or its data.
+  current user, judged as written and as the file system resolves it (junctions, links and substituted drives
+  included); (exit 3) when the product executable does not match the sha256 in MANIFEST.json (the other files are
+  listed in FILES.sha256 and are not re-hashed at every start); and (exit 4) when it is not a one-commit bundled
+  build whose updater is disabled. It never registers the hermes:// handler, never attaches to an installed Hermes
+  backend, and never touches an installed Hermes app, its updater or its data.
 
 .PARAMETER Root
   Sandbox root. Default: %LOCALAPPDATA%\HermesClarifyCandidate. It must be an absolute local path.

@@ -27,8 +27,11 @@ holding the candidate's Hermes home, Electron user data, a private user
 profile, the folder the assistant works in (workspace) and a temp folder. It
 REFUSES to start if that folder would be, sit inside, or contain any real
 Hermes location of yours (default home, legacy home, the installed app's user
-data or updater cache, any HERMES_HOME you or the machine have set), and it
-refuses a package that does not match MANIFEST.json.
+data or updater cache, any HERMES_HOME you or the machine have set), whether
+the path says so or only a junction, link or substituted drive does. It also
+refuses an executable that does not match the sha256 in MANIFEST.json. It does
+not re-hash the rest of the package at every start (that takes minutes): see
+VERIFY THE DOWNLOAD.
 
 What it does not touch: an installed Hermes app, its updater, its data, its
 backend, the hermes:// handler, your PATH. The candidate has its own product
@@ -54,7 +57,9 @@ STOP
 ----
 Closing the window leaves the candidate's background gateway running (Hermes
 Desktop never stops it). Run  Stop-HermesClarifyCandidate.cmd  to end it. It
-only ever ends processes that run from THIS folder.
+only ever ends processes that run from THIS folder, it also works after a
+direct start of the .exe, and it never asks you anything: it exits with an
+error only if something of the candidate is still running afterwards.
 
 RESET
 -----
@@ -67,6 +72,12 @@ sha256 of the zip and of @EXE@, the runtime prerequisites and the signing
 status. FILES.sha256 lists the sha256 of every other file in this folder:
 
     certutil -hashfile app\hermes-@SHA7@.exe SHA256
+
+To check EVERY file against FILES.sha256 (a few minutes), run this in this
+folder. It prints a line for each file that differs or is missing, and nothing
+when they all match:
+
+    powershell -NoProfile -Command "Get-Content -Encoding UTF8 FILES.sha256 | ForEach-Object { $h, $p = $_ -split '  ', 2; if (-not (Test-Path -LiteralPath $p) -or (Get-FileHash -Algorithm SHA256 -LiteralPath $p).Hash -ne $h) { 'DIFFERS: ' + $p } }"
 
 SMARTSCREEN
 -----------

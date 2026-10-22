@@ -18,6 +18,11 @@ discarded (``clarify.drafts.discard``), every draft in it is superseded by a loc
 session is deleted (:func:`purge_session`, called for every ``SessionDB`` removal by
 ``hermes_state_common.emit_session_deleted``; a deliberate archive keeps them). Retention is NOT tied to the
 clarify timeout or any timer: timing out is exactly when the drafts are needed.
+
+Failure contract: a draft the store could never write (text or a pick UTF-8 cannot encode: a JS string's unpaired
+surrogate) is refused whole at :func:`normalize_draft`; any other persistence problem (a refusing disk, a question the
+model wrote that cannot be encoded) is ``durable: false`` and never an exception out of a save, a lock or the
+settlement, because the answers the settlement carries must reach the model.
 """
 from __future__ import annotations
 

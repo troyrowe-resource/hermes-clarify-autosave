@@ -290,6 +290,12 @@ def _relay_compute_host_clarify_draft(rid: str, sid: str, params: dict) -> dict 
     if _hosted_clarify_session(sid, params["request_id"]) is None:
         return None
     spec = {key: params[key] for key in ("request_id", "question_id", "choices", "text", "revision") if key in params}
+    try:
+        json.dumps(spec, ensure_ascii=False).encode("utf-8")
+    except UnicodeEncodeError:
+        # The host pipe carries UTF-8 JSON; a JS string's unpaired surrogate cannot ride it. Refuse it exactly as the
+        # in-process book does (4002), not as a host failure (5019).
+        return _err(rid, 4002, "text and choices must be valid Unicode: an unpaired surrogate cannot be saved")
     result, failure = _compute_host_respond(
         rid, sid, {"draft": spec}, "clarify draft", timeout=_COMPUTE_HOST_DRAFT_WAIT_SECS)
     return failure if failure is not None else _ok(rid, result)

@@ -6,8 +6,11 @@
   Lays the shipped launcher beside a fake package (a tiny compiled executable that records its environment and
   arguments), points the INHERITED environment at a fake "real" profile that holds fake real Hermes locations,
   and runs Start-HermesClarifyCandidate.ps1 in child shells. It proves the launcher refuses every unsafe sandbox
-  location without creating anything, refuses a tampered or non-candidate package, and otherwise hands the
-  candidate a complete, credential-free, fully sandboxed environment. Run it with each shell the user might use:
+  location (also one that only reaches a real home through a junction or a substituted drive) without creating
+  anything, refuses a tampered or non-candidate package, and otherwise hands the candidate a complete,
+  credential-free, fully sandboxed environment. It also runs Stop-HermesClarifyCandidate.ps1 against real
+  processes: it must end exactly what runs from the package, never wait on the gateway request, and never be
+  refused. Run it with each shell the user might use:
 
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File Test-CandidateLauncher.ps1
     pwsh -NoProfile -File Test-CandidateLauncher.ps1
@@ -81,6 +84,42 @@ $csc = Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 $exe = Join-Path $package ('app\' + $exeName)
 & $csc /nologo /target:exe ('/out:' + $exe) $source | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'could not compile the stand-in executable' }
+
+# A process that simply stays (the app's gateway, or an unrelated program) and a stand-in for the packaged CLI: it
+# records how `gateway stop` was run, and hangs when the sandbox's home holds a hang-gateway-stop marker.
+$sleeperSource = Join-Path $work 'sleeper.cs'
+Set-Content -LiteralPath $sleeperSource -Encoding ASCII -Value @'
+public static class Sleeper { public static int Main() { System.Threading.Thread.Sleep(System.Threading.Timeout.Infinite); return 0; } }
+'@
+$cliSource = Join-Path $work 'fake-cli.cs'
+Set-Content -LiteralPath $cliSource -Encoding ASCII -Value @'
+using System;
+using System.IO;
+using System.Threading;
+public static class FakeCli {
+    public static int Main(string[] args) {
+        string temp = Environment.GetEnvironmentVariable("TEMP");
+        string home = Environment.GetEnvironmentVariable("HERMES_HOME");
+        Directory.CreateDirectory(temp);
+        string report = Path.Combine(temp, "fake-cli-report.txt");
+        File.WriteAllText(report, "ARGS=" + string.Join(" ", args) + "\r\nHERMES_HOME=" + home + "\r\n");
+        // A prompt would wait here; Stop closes stdin, so this ends at once.
+        string line = Console.In.ReadLine();
+        File.AppendAllText(report, "STDIN_AT_EOF=" + (line == null) + "\r\n");
+        if (File.Exists(Path.Combine(home, "hang-gateway-stop"))) Thread.Sleep(Timeout.Infinite);
+        return 0;
+    }
+}
+'@
+$ownedSleeper = Join-Path $package 'app\resources\agent-payload\python.exe'
+$fakeCli = Join-Path $package ('app\resources\agent-payload\bin\' + $exeName)
+$decoySleeper = Join-Path $work ('decoy\' + $exeName)
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ownedSleeper), (Split-Path -Parent $fakeCli), (Split-Path -Parent $decoySleeper) | Out-Null
+& $csc /nologo /target:exe ('/out:' + $ownedSleeper) $sleeperSource | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'could not compile the sleeper stand-in' }
+Copy-Item -LiteralPath $ownedSleeper -Destination $decoySleeper
+& $csc /nologo /target:exe ('/out:' + $fakeCli) $cliSource | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'could not compile the CLI stand-in' }
 
 function Write-PackageFiles([string]$UpdateMechanism = 'external', [string]$BuildSource = 'commit-build', [string]$Suffix = '-clarify-candidate') {
     $baked = [ordered]@{ HERMES_DATA_DIR_SUFFIX = $Suffix; HERMES_HOME = $null }
@@ -194,6 +233,27 @@ Test-Refused 'refuses a non-empty folder that is not a candidate sandbox' $forei
 $junction = Join-Path $work 'junction'
 & cmd.exe /c ('mklink /J "' + $junction + '" "' + (Join-Path $realLocal 'hermes') + '"') | Out-Null
 Test-Refused 'refuses a junction (even one that points at a real home)' $junction 2 @{} $false
+# A root that is harmless as written but physically lands inside a real home: the guard judges where it really is.
+$ancestorLink = Join-Path $work 'ancestor-link'
+& cmd.exe /c ('mklink /J "' + $ancestorLink + '" "' + (Join-Path $realLocal 'hermes') + '"') | Out-Null
+Test-Refused 'refuses a root that reaches a real home through a junction in one of its ancestors' (Join-Path $ancestorLink 'candidate')
+$elsewhere = Join-Path $work 'elsewhere'
+$homeLink = Join-Path $work 'home-link'
+New-Item -ItemType Directory -Force -Path $elsewhere | Out-Null
+& cmd.exe /c ('mklink /J "' + $homeLink + '" "' + $elsewhere + '"') | Out-Null
+Test-Refused 'refuses a root inside the place an exported HERMES_HOME junction really leads to' (Join-Path $elsewhere 'candidate') 2 @{ HERMES_HOME = $homeLink }
+Assert-Case 'refuses a root on a substituted drive that stands for a real home' {
+    $letter = $null
+    foreach ($candidateLetter in 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z') { if (-not (Test-Path -LiteralPath ($candidateLetter + ':\'))) { $letter = $candidateLetter; break } }
+    if (-not $letter) { return 'no free drive letter to substitute' }
+    $drive = $letter + ':'
+    & subst.exe $drive (Join-Path $realLocal 'hermes') | Out-Null
+    try {
+        $run = Invoke-Launcher 'Start-HermesClarifyCandidate.ps1' @('-Root', ($drive + '\candidate'), '-EmitEnvironment')
+        if ($run.Code -ne 2 -or $run.Err -notmatch 'REFUSING TO START') { return "exit $($run.Code): $($run.Err.Trim()) $($run.Out.Trim())" }
+        if (Test-Path -LiteralPath (Join-Path $realLocal 'hermes\candidate')) { return 'a candidate folder was created inside the real home' }
+    } finally { & subst.exe $drive /d | Out-Null }
+}
 
 # --- A damaged or non-candidate package ---------------------------------------------------------------------------------
 Assert-Case 'refuses an executable that no longer matches MANIFEST.json (exit 3)' {
@@ -234,13 +294,76 @@ Assert-Case 'starts the executable with the switch (spaces quoted) and ONLY the 
     if ($leaked.Count) { return "leaked: $leaked" }
     if (@($report | Where-Object { $_ -like 'CWD=*' }) -notcontains ('CWD=' + (Join-Path $root 'tmp'))) { return 'wrong working directory' }
 }
-Assert-Case 'Stop-HermesClarifyCandidate ends nothing it does not own and exits 0' {
-    $run = Invoke-Launcher 'Stop-HermesClarifyCandidate.ps1' @('-Root', (Join-Path $work 'started root'))
-    if ($run.Code -ne 0 -or $run.Out -notmatch 'still running: 0') { return "exit $($run.Code): $($run.Out.Trim()) $($run.Err.Trim())" }
+
+# --- Stop: real processes. What runs from the package ends; nothing else does; nothing can make it refuse or wait --------
+function Start-Sleeper([string]$Path) { Start-Process -FilePath $Path -PassThru -WindowStyle Hidden }
+function Stop-Sleepers($Processes) {
+    foreach ($process in $Processes) { if ($process -and -not $process.HasExited) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue } }
+}
+function Get-StopFailure($Run, [string]$Expected) {
+    if ($Run.Code -ne 0 -or $Run.Out -notmatch $Expected) { return "exit $($Run.Code): $($Run.Out.Trim()) $($Run.Err.Trim())" }
+    return $null
+}
+$startedRoot = Join-Path $work 'started root'
+Assert-Case 'Stop ends what runs from the package, leaves an unrelated process that shares the executable name alone, and runs gateway stop --yes' {
+    Remove-Item -LiteralPath (Join-Path $startedRoot 'tmp\fake-cli-report.txt') -ErrorAction SilentlyContinue
+    $owned = Start-Sleeper $ownedSleeper
+    $decoy = Start-Sleeper $decoySleeper
+    try {
+        $run = Invoke-Launcher 'Stop-HermesClarifyCandidate.ps1' @('-Root', $startedRoot)
+        $failure = Get-StopFailure $run 'Force-stopped: 1; still running: 0'
+        if ($failure) { return $failure }
+        if (-not $owned.WaitForExit(10000)) { return 'a process that runs from the package was left running' }
+        if ($decoy.HasExited) { return 'Stop ended an unrelated process that only shares the executable name' }
+        $report = Get-Content -LiteralPath (Join-Path $startedRoot 'tmp\fake-cli-report.txt')
+        if ($report -notcontains 'ARGS=gateway stop --yes') { return "gateway stop was run as: $($report -join ' | ')" }
+        if ($report -notcontains ('HERMES_HOME=' + (Join-Path $startedRoot 'user-data\hermes-home'))) { return "gateway stop saw another home: $($report -join ' | ')" }
+        if ($report -notcontains 'STDIN_AT_EOF=True') { return 'the gateway request could have waited on input' }
+    } finally { Stop-Sleepers @($owned, $decoy) }
+}
+Assert-Case 'Stop still ends the package when gateway stop never finishes (the request is bounded and then ended)' {
+    $marker = Join-Path $startedRoot 'user-data\hermes-home\hang-gateway-stop'
+    Set-Content -LiteralPath $marker -Value 'x' -Encoding ASCII
+    $owned = Start-Sleeper $ownedSleeper
+    try {
+        $run = Invoke-Launcher 'Stop-HermesClarifyCandidate.ps1' @('-Root', $startedRoot, '-GatewayStopTimeoutSeconds', '3')
+        $failure = Get-StopFailure $run 'did not finish within 3 s(?s).*still running: 0'
+        if ($failure) { return $failure }
+        if (-not $owned.WaitForExit(10000)) { return 'a process that runs from the package was left running' }
+    } finally { Remove-Item -LiteralPath $marker -ErrorAction SilentlyContinue; Stop-Sleepers @($owned) }
+}
+Assert-Case 'Stop works with no sandbox at all (a start without the launcher, or a root that never ran): sweeps, creates nothing' {
+    $never = Join-Path $work 'never started'
+    $owned = Start-Sleeper $ownedSleeper
+    try {
+        $run = Invoke-Launcher 'Stop-HermesClarifyCandidate.ps1' @('-Root', $never)
+        $failure = Get-StopFailure $run 'gateway stop skipped: there is no sandbox home(?s).*Force-stopped: 1; still running: 0'
+        if ($failure) { return $failure }
+        if (-not $owned.WaitForExit(10000)) { return 'a process that runs from the package was left running' }
+        if (Test-Path -LiteralPath $never) { return 'Stop created the sandbox root' }
+    } finally { Stop-Sleepers @($owned) }
+}
+Assert-Case 'Stop is never refused: an unsafe -Root only skips the gateway request' {
+    $owned = Start-Sleeper $ownedSleeper
+    try {
+        $run = Invoke-Launcher 'Stop-HermesClarifyCandidate.ps1' @('-Root', (Join-Path $realLocal 'hermes'))
+        $failure = Get-StopFailure $run 'gateway stop skipped: the sandbox root(?s).*Force-stopped: 1; still running: 0'
+        if ($failure) { return $failure }
+        if (-not $owned.WaitForExit(10000)) { return 'a process that runs from the package was left running' }
+        if (Test-Path -LiteralPath (Join-Path $realLocal 'hermes\tmp')) { return 'Stop wrote into a real Hermes home' }
+    } finally { Stop-Sleepers @($owned) }
+}
+Assert-Case 'Stop with nothing running exits 0' {
+    $run = Invoke-Launcher 'Stop-HermesClarifyCandidate.ps1' @('-Root', $startedRoot)
+    $failure = Get-StopFailure $run 'Force-stopped: 0; still running: 0'
+    if ($failure) { return $failure }
 }
 
 # --- Report ------------------------------------------------------------------------------------------------------------------
-if (Test-Path -LiteralPath $junction) { & cmd.exe /c ('rmdir "' + $junction + '"') | Out-Null }
+# A recursive delete must never follow a junction: remove each link itself first.
+foreach ($link in @($junction, $ancestorLink, $homeLink)) {
+    if (Test-Path -LiteralPath $link) { & cmd.exe /c ('rmdir "' + $link + '"') | Out-Null }
+}
 Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
 $failed = @($results | Where-Object { -not $_.Passed })
 Write-Output ('{0} case(s), {1} failed ({2})' -f $results.Count, $failed.Count, $shell)
