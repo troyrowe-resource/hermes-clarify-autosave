@@ -26,6 +26,12 @@ export const PRODUCT_IDENTITY: Readonly<ProductIdentity> =
 /** Pin before the first userData lookup and single-instance lock. Electron's
  * later display-name changes must not redirect an installed build's state.
  * Stable keeps its historical userData and runtime naming behavior.
+ *
+ * An explicit HERMES_DESKTOP_USER_DATA_DIR is applied by main.ts right after this
+ * call and replaces the pinned directory outright, so it is neither pinned nor
+ * created: an isolated launch must not leave <appData>/<identity name> behind in
+ * the real profile. (Electron itself still creates its default userData before any
+ * app code runs; only `--user-data-dir` on the command line avoids that.)
  */
 export function applyDesktopIdentity(
   app: {
@@ -33,15 +39,19 @@ export function applyDesktopIdentity(
     setPath(name: 'userData', value: string): void
     setName(name: string): void
   },
-  identity: Readonly<ProductIdentity> = PRODUCT_IDENTITY
+  identity: Readonly<ProductIdentity> = PRODUCT_IDENTITY,
+  env: NodeJS.ProcessEnv = process.env
 ): string | null {
   if (!identity.token && identity.appNamePascal === identity.artifactNamePascal) {
     return null
   }
 
-  const userData: string = path.join(app.getPath('appData'), identity.appNamePascal)
-  mkdirSync(userData, { recursive: true })
-  app.setPath('userData', userData)
+  if (!env.HERMES_DESKTOP_USER_DATA_DIR) {
+    const userData: string = path.join(app.getPath('appData'), identity.appNamePascal)
+    mkdirSync(userData, { recursive: true })
+    app.setPath('userData', userData)
+  }
+
   app.setName(identity.displayName)
 
   return identity.displayName
