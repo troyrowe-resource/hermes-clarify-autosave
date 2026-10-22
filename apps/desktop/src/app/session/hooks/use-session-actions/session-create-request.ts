@@ -1,3 +1,4 @@
+import { submitWithClarifyBatch } from '@/store/clarify-batch'
 import { requestGatewayForAgent } from '@/store/gateway'
 import {
   $activeGatewayProfile,
@@ -19,6 +20,8 @@ import {
 } from '@/store/session'
 import type { SessionCreateResponse } from '@/types/hermes'
 
+import { clarifyBatchOwner } from '../use-prompt-actions/submission-destination'
+
 type RequestGateway = <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 
 /** A backend predating a `session.create` field rejects the whole create at
@@ -37,6 +40,23 @@ function rejectedField(params: Record<string, unknown>, error: unknown): string 
 
   return DROPPABLE_CREATE_FIELDS.find(
     field => field in params && message.includes(`invalid params for session.create: ${field}:`)
+  )
+}
+
+/**
+ * The first prompt of a session this call just created: `prompt.submit` on its exact runtime id. The turn it starts
+ * may ask clarify questions like any other, so a canonical owner is offered the batch form as a normal submit is.
+ */
+export function submitFirstPrompt(
+  requestGateway: RequestGateway,
+  storedSessionId: string,
+  runtimeSessionId: string,
+  text: string
+): Promise<unknown> {
+  return submitWithClarifyBatch(
+    clarifyBatchOwner(storedSessionId),
+    { session_id: runtimeSessionId, text },
+    sent => requestGateway('prompt.submit', sent)
   )
 }
 
