@@ -8,7 +8,7 @@
   "source_paths": 20719,
   "adaptations": [
     "README.md preserved as README.upstream.md",
-    "Inherited workflows moved out of .github/workflows to reference/upstream-workflows; none may execute automatically",
+    "Inherited workflows and Dependabot configuration omitted from current working tree; exact files retained in initial import commit a80ac875d8d87e4316b09e65ef85097dd09d2906, at reference/upstream-workflows/ and .github/dependabot.yml",
     "Root .gitignore extended to exclude cloud/Windows candidate evidence and tool caches",
     "Added independent cloud task, repository README and manual Windows validation workflow"
   ],

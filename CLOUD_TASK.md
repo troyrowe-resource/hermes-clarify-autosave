@@ -8,7 +8,7 @@ Produce a genuinely tested, separately runnable Windows candidate that preserves
 
 This repository contains the complete public Hermes source snapshot with the autosave implementation already present. Its provenance is `source-provenance.json`: source commit `b6a1a4e36fab77a974943e95e9e8ce224a8de632` from `troyrowe-resource/hermes-agent`, branch `fix/clarify-draft-preservation-20261022`. That is a provenance reference, not a commit you should expect in this new repository's independent history. Start from this repository's `main`, record its actual commit, then create a dedicated candidate branch. Do not unnecessarily clone or modify another repository.
 
-Read `README.md`, `source-provenance.json`, the relevant repository `AGENTS.md` files and `CONTRIBUTING.md` first. `README.upstream.md` preserves the upstream README. The inherited upstream workflows are deliberately inert under `reference/upstream-workflows/`; do not reactivate that suite.
+Read `README.md`, `source-provenance.json`, the relevant repository `AGENTS.md` files and `CONTRIBUTING.md` first. `README.upstream.md` preserves the upstream README. Inherited workflows and Dependabot configuration are intentionally absent from the working tree. Their exact contents remain in initial import commit `a80ac875d8d87e4316b09e65ef85097dd09d2906`, under `reference/upstream-workflows/` and `.github/dependabot.yml`; inspect with `git show` if needed, but do not reactivate them. A historical automatic Dependabot failure from the initial import is not a Windows test result.
 
 ## Mandatory parallel delegation
 

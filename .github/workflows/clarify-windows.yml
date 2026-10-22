@@ -1,0 +1,197 @@
+name: Clarify drafts - Windows native evidence
+
+# Manual seed workflow for this public build/test repository: build the Desktop
+# app from source and run the clarify-draft Python contract tests plus the one
+# native Windows Playwright spec (e2e/clarify-drafts-native.spec.ts) against a
+# synthetic model server. It produces evidence only. It does not package, sign,
+# install or publish anything; a user-ready Windows package is later work.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: clarify-windows-${{ github.ref }}
+  # Queue a second dispatch for the same branch instead of killing an in-flight
+  # evidence run; GitHub keeps at most one running and one pending.
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  native:
+    name: Desktop build + clarify drafts native E2E (windows-2025 x64)
+    runs-on: windows-2025
+    timeout-minutes: 60
+    env:
+      # No provider credential may reach a test; the fixtures also strip them.
+      OPENROUTER_API_KEY: ''
+      OPENAI_API_KEY: ''
+      NOUS_API_KEY: ''
+      ANTHROPIC_API_KEY: ''
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Name the evidence root
+        run: |
+          # Mixed form (D:/a/_temp) reads the same to Git Bash, Python and Node.
+          temp="$RUNNER_TEMP"
+          if command -v cygpath >/dev/null; then temp="$(cygpath -m "$RUNNER_TEMP")"; fi
+          echo "CLARIFY_EVIDENCE=$temp/clarify-evidence" >> "$GITHUB_ENV"
+          echo "CLARIFY_ARTIFACT=$temp/clarify-artifact" >> "$GITHUB_ENV"
+
+      - name: Prepare locked Python/Node toolchain and test interpreter
+        id: pm
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: all
+          extras: '[]'
+          test-environment: 'true'
+          archive-inputs: 'false'
+
+      - name: Record source and run metadata
+        if: always()
+        env:
+          PM_PYTHON: ${{ steps.pm.outputs.python-version }}
+          PM_UV: ${{ steps.pm.outputs.uv-version }}
+          PM_NODE: ${{ steps.pm.outputs.node-version }}
+          PM_NPM: ${{ steps.pm.outputs.npm-version }}
+          PM_TARGET: ${{ steps.pm.outputs.target }}
+        run: |
+          python -S scripts/clarify_ci/evidence.py metadata --out "$CLARIFY_EVIDENCE/metadata/run.json" \
+            --set "pm.python=$PM_PYTHON" --set "pm.uv=$PM_UV" --set "pm.node=$PM_NODE" \
+            --set "pm.npm=$PM_NPM" --set "pm.target=$PM_TARGET"
+
+      # Full npm ci (not --ignore-scripts): electron's postinstall downloads the
+      # binary the spec launches. Only this dependency install is retried.
+      - name: Install npm workspaces (npm ci)
+        uses: ./.github/actions/retry
+        with:
+          command: npm ci
+
+      - name: Build the Desktop app from source
+        id: build
+        working-directory: apps/desktop
+        timeout-minutes: 15
+        run: npm run build
+
+      - name: Clarify draft and contract Python tests
+        id: python
+        if: always() && steps.pm.outcome == 'success'
+        timeout-minutes: 20
+        env:
+          HERMES_TEST_FILE_RETRIES: '0'
+        run: |
+          set -euo pipefail
+          mkdir -p "$CLARIFY_EVIDENCE/python"
+          scripts/run_tests.sh \
+            tests/gateway/test_clarify_drafts_owner.py \
+            tests/tools/test_clarify_drafts_store.py \
+            tests/tools/test_clarify_tool_drafts.py \
+            tests/tools/test_clarify_draft_versions.py \
+            tests/tui_gateway/test_clarify_drafts.py \
+            tests/tui_gateway/test_clarify_drafts_session_delete.py \
+            tests/tools/test_clarify_tool.py \
+            tests/tools/test_clarify_gateway.py \
+            tests/gateway/test_clarify_card_retire_on_timeout.py \
+            tests/gateway/test_clarify_lock_owner.py \
+            tests/gateway/test_clarify_lock_keeps_locked_answers.py \
+            tests/gateway/test_clarify_batch_settlement_parity.py \
+            tests/gateway/test_canonical_wire_contract.py \
+            tests/tui_gateway/test_protocol.py \
+            tests/tui_gateway/test_session_delete_rpc.py \
+            tests/tui_gateway/contracts/test_generated.py \
+            scripts/clarify_ci/test_evidence.py \
+            -q 2>&1 | tee "$CLARIFY_EVIDENCE/python/run_tests.log"
+
+      - name: Generated gateway contracts are current
+        id: contracts
+        if: always() && steps.pm.outcome == 'success'
+        run: |
+          set -euo pipefail
+          mkdir -p "$CLARIFY_EVIDENCE/python"
+          "$HERMES_PYTHON" scripts/gen_gateway_contracts.py --check 2>&1 | tee "$CLARIFY_EVIDENCE/python/contracts.log"
+
+      - name: Isolation preflight and evidence staging
+        id: preflight
+        if: always() && steps.build.outcome == 'success'
+        run: |
+          set -euo pipefail
+          python -S scripts/clarify_ci/evidence.py guard
+          python -S scripts/clarify_ci/evidence.py sentinels --out "$CLARIFY_EVIDENCE/isolation/before.json"
+          python -S scripts/clarify_ci/evidence.py stage "$CLARIFY_EVIDENCE/native"
+
+      # One worker and --retries=0: CI=true would otherwise give the root config
+      # one hidden retry. The fixture supplies the sandbox HERMES_HOME, user data,
+      # IGNORE_EXISTING, ISOLATED_BACKEND, HERMES_ROOT, unique APP_NAME and
+      # SKIP_PROTOCOL_REGISTRATION; the mock server is the only model.
+      - name: Native Windows Playwright - clarify drafts survive a real timeout
+        id: native
+        if: always() && steps.preflight.outcome == 'success'
+        working-directory: apps/desktop
+        timeout-minutes: 15
+        env:
+          CI: 'true'
+          HERMES_DESKTOP_PYTHON: ${{ steps.pm.outputs.python-path }}
+          HERMES_E2E_EVIDENCE_DIR: ${{ env.CLARIFY_EVIDENCE }}/native
+        run: |
+          set -euo pipefail
+          "$HERMES_DESKTOP_PYTHON" -S -c "import sys; print('backend interpreter:', sys.executable)"
+          npx --no playwright test e2e/clarify-drafts-native.spec.ts --workers=1 --retries=0
+
+      - name: No real-install location was touched
+        id: isolation
+        if: always() && steps.preflight.outcome == 'success'
+        run: |
+          set -euo pipefail
+          python -S scripts/clarify_ci/evidence.py sentinels --out "$CLARIFY_EVIDENCE/isolation/after.json"
+          python -S scripts/clarify_ci/evidence.py isolation \
+            --before "$CLARIFY_EVIDENCE/isolation/before.json" --after "$CLARIFY_EVIDENCE/isolation/after.json"
+
+      - name: Verify native evidence is complete
+        id: verify
+        if: always() && steps.preflight.outcome == 'success'
+        run: |
+          python -S scripts/clarify_ci/evidence.py verify \
+            --evidence "$CLARIFY_EVIDENCE/native" \
+            --results apps/desktop/playwright-report/results.json \
+            --out "$CLARIFY_EVIDENCE/native-verdict.json"
+
+      - name: Collect bounded evidence
+        if: always()
+        run: |
+          python -S scripts/clarify_ci/evidence.py collect --dest "$CLARIFY_ARTIFACT" \
+            --source "evidence=$CLARIFY_EVIDENCE" \
+            --source "playwright-results=apps/desktop/playwright-report/results.json" \
+            --source "test-results=apps/desktop/test-results"
+
+      - name: Upload evidence artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: clarify-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.CLARIFY_ARTIFACT }}
+          retention-days: 7
+          if-no-files-found: error
+          include-hidden-files: false
+
+      - name: Evidence gate and summary
+        if: always()
+        run: |
+          python -S scripts/clarify_ci/evidence.py gate \
+            --verify "$CLARIFY_EVIDENCE/native-verdict.json" \
+            --outcome "setup-pm=${{ steps.pm.outcome }}" \
+            --outcome "desktop-build=${{ steps.build.outcome }}" \
+            --outcome "python-tests=${{ steps.python.outcome }}" \
+            --outcome "contracts=${{ steps.contracts.outcome }}" \
+            --outcome "isolation-preflight=${{ steps.preflight.outcome }}" \
+            --outcome "native-e2e=${{ steps.native.outcome }}" \
+            --outcome "isolation-after=${{ steps.isolation.outcome }}" \
+            --outcome "native-evidence=${{ steps.verify.outcome }}"

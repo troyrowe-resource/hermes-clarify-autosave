@@ -38,7 +38,9 @@ Only the dedicated manual workflow is active:
 - Purpose: locked toolchain setup, focused tests, Desktop build and the native clarification timeout/recovery scenario
 - No live backend, signing secrets, production model accounts, deployment or release publication
 
-Inherited upstream workflows are retained as reference material under [`reference/upstream-workflows/`](reference/upstream-workflows/), not `.github/workflows/`. They include upstream-specific release infrastructure and runner labels and must not be reactivated wholesale. The local PM setup action remains available under `.github/actions/setup-pm`.
+Inherited upstream workflows and Dependabot configuration are omitted from the current working tree. Their exact files remain in the initial import commit [`a80ac875d8d87e4316b09e65ef85097dd09d2906`](https://github.com/troyrowe-resource/hermes-clarify-autosave/commit/a80ac875d8d87e4316b09e65ef85097dd09d2906): workflows under `reference/upstream-workflows/`, Dependabot at `.github/dependabot.yml`. Use `git show` to inspect individual historical files when needed; do not restore the upstream automation wholesale. The local PM setup action remains available under `.github/actions/setup-pm`.
+
+One automatic Dependabot update run started during the initial import and failed before its inherited configuration was made inert. That historical run is not a Windows build or an autosave test result; its record is retained.
 
 The seed workflow is preparation for a future run. **Its presence is not evidence that Windows tests have passed.** It is not an installer pipeline. `CLOUD_TASK.md` requires the agent to complete packaging and test the actual candidate artifact after native acceptance.
 
