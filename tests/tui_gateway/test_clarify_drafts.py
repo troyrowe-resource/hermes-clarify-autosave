@@ -250,8 +250,9 @@ def test_drafts_survive_a_backend_restart_on_disk_and_can_be_discarded(server, t
     assert records[0]["drafts"] == {"q1": {"choices": ["Bolt"], "text": "Other: Delta", "revision": 7}}
     assert records[0]["questions"][1]["question"] == "7. Which exhibitors?"
     assert records[0]["questions"][1]["choices"] == ["Acme (Recommended)", "Bolt", "Cobalt"]
-    stored = next((tmp_path / "clarify_drafts").rglob("*.json"))
-    assert stored.stat().st_mode & 0o777 == 0o600
+    # The record's privacy is a per-host contract (owner-only mode on POSIX, the directory ACL on Windows):
+    # tests/tools/test_clarify_drafts_privacy.py. It is not asserted here, where Windows has no mode bits.
+    assert next((tmp_path / "clarify_drafts").rglob("*.json")).is_file()
     assert _call(server, peer2, "clarify.drafts.discard", {"session_id": "s2", "request_id": req.id})[
         "result"] == {"status": "ok"}
     assert _call(server, peer2, "clarify.drafts", {"session_id": "s2"})["result"] == {"drafts": []}

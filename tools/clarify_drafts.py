@@ -32,6 +32,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Collection
 
+from hermes_dir_acl import make_user_dir
+from utils import atomic_replace
+
 logger = logging.getLogger(__name__)
 
 STORE_DIRNAME = "clarify_drafts"
@@ -172,7 +175,12 @@ def _fsync_dir(directory: Path) -> None:
 
 
 def _atomic_write(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # A save that outlives its profile must fail (``FileNotFoundError``: not durable), never resurrect
+    # the deleted home; ``make_user_dir`` keeps a directory an ELEVATED Windows process creates usable
+    # by the same user unelevated (a plain ``mkdir(mode=0o700)`` strands it, ``hermes_dir_acl``).
+    from hermes_constants import assert_named_profile_home_live
+    assert_named_profile_home_live(path.parent)
+    make_user_dir(path.parent, mode=0o700, parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".draft-", suffix=".tmp", dir=str(path.parent))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -180,7 +188,8 @@ def _atomic_write(path: Path, payload: dict) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.chmod(tmp, 0o600)
-        os.replace(tmp, path)
+        # Windows refuses a rename onto a file another handle (a concurrent recall read) holds open.
+        atomic_replace(tmp, path)
     except BaseException:
         try:
             os.unlink(tmp)

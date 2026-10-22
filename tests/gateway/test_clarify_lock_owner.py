@@ -20,6 +20,12 @@ from tests.gateway.test_surface_admission import _authority
 
 QUESTIONS = [{'qid': 'q0', 'question': 'colour?', 'choices': ['red', 'blue'], 'multi_select': False},
              {'qid': 'q1', 'question': 'size?', 'choices': None, 'multi_select': False}]
+# Windows children need the system environment (Winsock: without SYSTEMROOT ``import asyncio`` dies in
+# ``_overlapped`` with WinError 10106; temp, PATHEXT) that the hermetic test process still carries; POSIX only
+# ever uses the first three. Same list as the other real-gateway child probes (test_unified_gateway_native_live).
+_CHILD_ENV_KEYS = ('PATH', 'LANG', 'TZ', 'SYSTEMROOT', 'SYSTEMDRIVE', 'WINDIR', 'COMSPEC', 'TEMP', 'TMP',
+                   'PATHEXT', 'LOCALAPPDATA', 'APPDATA', 'PROGRAMDATA', 'NUMBER_OF_PROCESSORS',
+                   'PROCESSOR_ARCHITECTURE')
 
 
 class _Peer:
@@ -122,7 +128,7 @@ def test_cli_turn_batch_answered_by_clarify_lock_from_a_second_viewer_end_to_end
     home.mkdir()
     state.mkdir()
     repo = Path(__file__).resolve().parents[2]
-    env = {key: os.environ[key] for key in ('PATH', 'LANG', 'TZ') if key in os.environ}
+    env = {key: os.environ[key] for key in _CHILD_ENV_KEYS if key in os.environ}
     env.update(HOME=str(home), USERPROFILE=str(home), HERMES_HOME=str(state), PYTHONPATH=str(repo))
     result = subprocess.run(
         [sys.executable, str(Path(__file__).parent / 'fixtures' / 'authority_clarify_lock_peer.py')],
