@@ -195,12 +195,14 @@ def test_read_asar_file_reads_packed_files_by_path(tmp_path):
 
 
 @pytest.mark.parametrize("package, needle", [
-    ({"name": "hermes", "productName": "Hermes Agent abcdef0"}, "name='hermes'"),
-    ({"name": "HermesBundledCommitabcdef0", "productName": "Hermes"}, "productName='Hermes'"),
+    ({"name": "hermes", "productName": "Hermes Agent abcdef0"}, "name='hermes', expected 'HermesBundledCommitabcdef0'"),
+    ({"name": "HermesBundledCommitabcdef0", "productName": "Hermes"}, "productName='Hermes', expected 'Hermes Agent abcdef0'"),
     ({"name": "HermesBundledCommitabcdef0"}, "productName=None"),
-    ({"name": "HermesBundledCommitabcdef0", "productName": "Hermes Agent 1234567"}, "does not carry the commit abcdef0"),
+    ({"name": "HermesBundledCommit1234567", "productName": "Hermes Agent abcdef0"}, "name='HermesBundledCommit1234567'"),
+    ({"name": "HermesBundledCommitabcdef0", "productName": "Hermes Agent abcdef0 "}, "productName='Hermes Agent abcdef0 '"),
 ])
-def test_audit_refuses_names_that_would_put_a_direct_start_in_the_installed_apps_user_data(tmp_path, package, needle):
+def test_audit_requires_the_candidates_exact_names_so_a_direct_start_never_resolves_to_the_installed_apps_user_data(
+        tmp_path, package, needle):
     problems = _problems(_fake_app(tmp_path, package=package))
     assert any(needle in problem for problem in problems), problems
 

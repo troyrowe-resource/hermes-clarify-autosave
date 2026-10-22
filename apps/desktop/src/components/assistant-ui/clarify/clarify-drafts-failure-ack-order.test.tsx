@@ -46,8 +46,6 @@ const tree = (ui: ReactNode) => (
   </I18nProvider>
 )
 
-const state = () => document.querySelector('[data-clarify-draft-state]')?.getAttribute('data-clarify-draft-state')
-
 beforeEach(() => {
   window.localStorage.clear()
   clearAllSessionStates()
@@ -83,8 +81,9 @@ describe('clarify draft acknowledgements arriving out of order', () => {
     $gateway.set({ request } as never)
     rememberServerRequest({ fail: vi.fn(), id: REQUEST_ID, method: 'clarify', params: {}, respond: vi.fn() })
     setClarifyRequest({ questions: QUESTIONS, requestId: REQUEST_ID, sessionId: 'session-1' })
-    render(tree(<ClarifyTool {...props()} />))
+    const { container } = render(tree(<ClarifyTool {...props()} />))
     const field = () => screen.getByPlaceholderText('Type your answer…')
+    const state = () => container.querySelector('[data-clarify-draft-state]')?.getAttribute('data-clarify-draft-state')
 
     fireEvent.change(field(), { target: { value: 'one' } })
     await waitFor(() => expect(release).toHaveLength(1), { timeout: 4000 })

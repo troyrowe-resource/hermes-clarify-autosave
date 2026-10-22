@@ -370,7 +370,9 @@ function noteAcknowledged(
 
   const acked = held >= (entry.acked?.[qid] ?? 0) ? { ...entry.acked, [qid]: held } : entry.acked
 
-  const onDisk = durable ? { ...entry.durable, [qid]: held } : entry.durable
+  // Replies to overlapping saves can arrive out of order: a late disk confirmation for an OLDER revision must not
+  // take back the newer one already confirmed.
+  const onDisk = durable && held >= (entry.durable?.[qid] ?? 0) ? { ...entry.durable, [qid]: held } : entry.durable
 
   writeEntry({ ...entry, acked, durable: onDisk })
 }

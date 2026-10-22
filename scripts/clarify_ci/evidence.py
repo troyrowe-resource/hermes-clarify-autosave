@@ -66,6 +66,10 @@ SENTINEL_DIRS = (
     ("APPDATA", "hermes-desktop"),       # historical desktop userData name (desktop-uninstall.ts)
     ("LOCALAPPDATA", "hermes-updater"),  # electron-updater cache of the installed app
     ("HOME", ".hermes"),                 # POSIX default home
+    # The per-OS-user rendezvous in which gateways find each other (gateway/status.py::_get_lock_dir). A process that
+    # uses the real one can attach to the user's real backend, so no run may create it.
+    ("USERPROFILE", ".local/state/hermes*"),
+    ("HOME", ".local/state/hermes*"),
 )
 SENTINEL_REGISTRY = (r"Software\Classes\hermes", r"Software\Classes\hermes-dev")
 

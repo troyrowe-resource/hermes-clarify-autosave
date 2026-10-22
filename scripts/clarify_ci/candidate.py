@@ -228,20 +228,20 @@ def read_asar_file(archive: Path, name: str) -> bytes:
 
 
 def _audit_asar(resources: Path, commit: str, problems: list[str]) -> dict:
-    """The names Electron derives its default user data directory from, before any app code runs: they must be the
-    candidate's own, so even a start that ignores every override cannot resolve to the installed app's folder."""
+    """The names Electron derives its default user data directory from, before any app code runs. They must be exactly
+    the candidate's own (``name`` HermesBundledCommit<sha7>, ``productName`` Hermes Agent <sha7>), so even a start
+    that ignores every override can never resolve to the installed Hermes app's %APPDATA%\\Hermes."""
     try:
         package = json.loads(read_asar_file(resources / "app.asar", "package.json").decode("utf-8-sig"))
     except (OSError, ValueError, KeyError, TypeError) as error:
         problems.append(f"cannot read package.json from resources/app.asar: {error!r}")
         return {}
     names = {key: package.get(key) for key in ("name", "productName", "desktopName")}
-    for key in ("name", "productName"):
-        if str(names[key] or "").strip().lower() in ("", "hermes"):
-            problems.append(f"app.asar package.json {key}={names[key]!r}: Electron's default user data directory "
-                            "would be the installed Hermes app's")
-    if commit[:7] not in str(names["productName"] or ""):
-        problems.append(f"app.asar package.json productName={names['productName']!r} does not carry the commit {commit[:7]}")
+    expected = {"name": f"HermesBundledCommit{commit[:7]}", "productName": f"Hermes Agent {commit[:7]}"}
+    for key, value in expected.items():
+        if names[key] != value:
+            problems.append(f"app.asar package.json {key}={names[key]!r}, expected {value!r}: Electron's default "
+                            "user data directory is derived from it and must never be the installed Hermes app's")
     return names
 
 

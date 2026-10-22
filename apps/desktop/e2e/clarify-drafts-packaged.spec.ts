@@ -6,16 +6,19 @@
  * person starts it: through the shipped `Start-HermesClarifyCandidate.cmd`, whose `-EmitEnvironment` contract
  * (executable, `--user-data-dir`, the complete sandboxed environment) this spec launches from. Nothing here uses a
  * dev Electron, a dev backend or the repo's source tree; the only simulated part is the model, a loopback mock that
- * scripts the clarify tool call.
+ * scripts the clarify tool call. (`clarify-drafts-packaged-direct.spec.ts` covers the start WITHOUT the launcher.)
  *
  *  1. The shipped launcher's contract is a fully isolated start of THIS executable: one sandbox for every state
- *     location, no real Hermes location nearby, and none of the decoy variables the harness exports on purpose
- *     (a decoy HERMES_HOME, a dev checkout, a PM Python) reaches the candidate.
- *  2. It is the packaged app (`app.isPackaged`, loaded from app.asar, the exact exe whose sha256 the manifest names),
- *     reporting the commit it was built from, with its Electron paths inside the sandbox.
+ *     location (home, user data, profile, temp and the per-OS-user gateway rendezvous), no real Hermes location
+ *     nearby, and none of the decoy variables the harness exports on purpose (a decoy HERMES_HOME, a dev checkout,
+ *     a PM Python) reaches the candidate.
+ *  2. It is the packaged app (`app.isPackaged`, loaded from app.asar, the exact exe whose sha256 the manifest names)
+ *     under the candidate's own name (never "Hermes"), reporting the commit it was built from, with its Electron
+ *     paths inside the sandbox.
  *  3. Its backend is the bundled runtime: the process serving the window is an interpreter from the package's own
- *     `agent-payload`, and the canonical gateway it started stamped that commit. A thin app that quietly started
- *     some other Hermes would fail here, because no other Hermes has this commit's autosave.
+ *     `agent-payload`, the canonical gateway it started stamped that commit, and that gateway published its
+ *     rendezvous record inside the sandbox, so it cannot have attached to anyone else's backend. A thin app that
+ *     quietly started some other Hermes would fail here, because no other Hermes has this commit's autosave.
  *  4. The scenario: a batch clarify, one pick and multiline typed text, NEVER Confirm. The card says "saved" only
  *     when the server's disk holds it; after the real timeout the settled card shows exactly those as drafts (not
  *     answers), the model is told they are unsubmitted, and "Show drafts saved on the server" recalls them.
@@ -72,29 +75,24 @@ import {
   foreignHermesProcesses,
   isInside,
   type LaunchContract,
+  lockDirectories,
   parseLaunchContract,
   processesInside,
   readCandidatePackage,
+  readHostRecords,
+  readMainFacts,
+  readPackagedConfig,
+  readVersionInfo,
   redact,
+  rendezvousProblems,
   runShipped,
   samePath,
-  sha256File
+  sha256File,
+  waitForWindowVisible
 } from './clarify-packaged-fixture'
 import { expect, installErrorBannerGuard, test } from './test'
 
-const CANDIDATE_DIR = process.env.HERMES_E2E_CANDIDATE_DIR
-const REQUIRE_PACKAGED = process.env.HERMES_E2E_REQUIRE_PACKAGED === '1'
-const EXPECTED_COMMIT = process.env.HERMES_E2E_EXPECT_COMMIT
-// Default: the launcher's own default sandbox (%LOCALAPPDATA%\HermesClarifyCandidate), as a person gets it.
-const SANDBOX_ROOT = process.env.HERMES_E2E_CANDIDATE_SANDBOX_ROOT
-
-// Variables the workflow exports on purpose to prove they cannot reach the candidate; and the decoy Hermes home.
-const DECOYS = (process.env.HERMES_E2E_DECOY_VARIABLES ?? '')
-  .split(',')
-  .map(name => name.trim())
-  .filter(Boolean)
-
-const DECOY_HOME = process.env.HERMES_E2E_DECOY_HOME
+const CONFIG = readPackagedConfig()
 
 const CLARIFY_TIMEOUT_SECONDS = 40
 const TYPED_TEXT = 'Packaged draft: line one ✓ ünï©ödé  \n  indented second line\nlast line, trailing spaces   '
@@ -110,25 +108,12 @@ const HARNESS_ARGUMENTS = ['--disable-gpu', '--no-sandbox']
 const HARNESS_ENVIRONMENT = { HERMES_DESKTOP_SKIP_QUIT_CONFIRM: '1' }
 
 test.skip(
-  !CANDIDATE_DIR && !REQUIRE_PACKAGED,
+  !CONFIG.candidateDir && !CONFIG.requirePackaged,
   'no extracted candidate package (HERMES_E2E_CANDIDATE_DIR) is configured'
 )
 
-interface VersionInfo {
-  commit?: null | string
-  dirty?: boolean
-  hermesHome?: string
-  hermesRoot?: string
-  hermesRuntime?: { type?: string }
-  payload?: string
-  platform?: string
-  source?: string
-  updateMechanism?: string
-}
-
 interface DesktopBridge {
   getConnection: () => Promise<{ baseUrl: string; gatewayEndpoint?: { api_origin?: string }; mode?: string }>
-  getVersion: () => Promise<VersionInfo>
 }
 
 type Observations = Record<string, unknown>
@@ -146,22 +131,6 @@ interface Run {
 
 const check = (condition: boolean, message: string): void => expect(condition, message).toBe(true)
 
-async function waitForWindowVisible(app: ElectronApplication, page: Page, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs
-
-  while (Date.now() < deadline) {
-    const visible = await app
-      .evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.isVisible() ?? false)
-      .catch(() => false)
-
-    if (visible) {
-      return
-    }
-
-    await page.waitForTimeout(500)
-  }
-}
-
 /** Resolve the shipped launcher's contract and prove it is an isolated start of this very executable. */
 function acquireContract(run: Pick<Run, 'expectedCommit' | 'observations' | 'pkg' | 'rootArgs'>): LaunchContract {
   const { expectedCommit, observations, pkg, rootArgs } = run
@@ -178,14 +147,14 @@ function acquireContract(run: Pick<Run, 'expectedCommit' | 'observations' | 'pkg
 
   const problems = contractProblems(contract, {
     commit: expectedCommit,
-    decoys: DECOYS,
+    decoys: CONFIG.decoys,
     exe: pkg.exe,
     packageRoot: pkg.root
   })
 
   observations.isolation = {
     contractProblems: problems.length,
-    decoyVariablesWithheld: DECOYS.length,
+    decoyVariablesWithheld: CONFIG.decoys.length,
     environmentNames: Object.keys(contract.environment).sort(),
     layout: contract.layout,
     refusedLocations: contract.refusedLocations
@@ -249,42 +218,8 @@ async function verifyIdentity(run: Run, app: ElectronApplication, page: Page): P
   const { contract, expectedCommit, observations, pkg } = run
   const { layout } = contract
   const exeSha256 = sha256File(pkg.exe)
-
-  const main = await app.evaluate(({ app: electron }) => ({
-    appPath: electron.getAppPath(),
-    argv: process.argv,
-    env: {
-      HERMES_DATA_DIR_SUFFIX: process.env.HERMES_DATA_DIR_SUFFIX ?? null,
-      HERMES_DESKTOP_USER_DATA_DIR: process.env.HERMES_DESKTOP_USER_DATA_DIR ?? null,
-      HERMES_HOME: process.env.HERMES_HOME ?? null
-    },
-    execPath: process.execPath,
-    isPackaged: electron.isPackaged,
-    name: electron.getName(),
-    paths: {
-      appData: electron.getPath('appData'),
-      home: electron.getPath('home'),
-      logs: electron.getPath('logs'),
-      sessionData: electron.getPath('sessionData'),
-      temp: electron.getPath('temp'),
-      userData: electron.getPath('userData')
-    },
-    version: electron.getVersion()
-  }))
-
-  // What the app itself says it is: the build stamp's commit, payload kind and update owner, and its runtime.
-  const info = await page.evaluate(async (): Promise<VersionInfo> => {
-    const bridge = (window as unknown as { hermesDesktop?: DesktopBridge }).hermesDesktop
-
-    if (!bridge) {
-      throw new Error('the desktop version bridge is unavailable')
-    }
-
-    const { commit, dirty, hermesHome, hermesRoot, hermesRuntime, payload, platform, source, updateMechanism } =
-      await bridge.getVersion()
-
-    return { commit, dirty, hermesHome, hermesRoot, hermesRuntime, payload, platform, source, updateMechanism }
-  })
+  const main = await readMainFacts(app)
+  const info = await readVersionInfo(page)
 
   const facts = {
     appPathIsAsar: samePath(main.appPath, path.join(pkg.resources, 'app.asar')),
@@ -302,6 +237,8 @@ async function verifyIdentity(run: Run, app: ElectronApplication, page: Page): P
     isPackaged: main.isPackaged,
     mainProcessEnvironment: main.env,
     name: main.name,
+    // Electron derives its default user data folder from this name: it must be the candidate's, never "Hermes".
+    nameIsCandidate: main.name.toLowerCase() !== 'hermes' && main.name.includes(expectedCommit.slice(0, 7)),
     payload: info.payload ?? null,
     source: info.source ?? null,
     updateMechanism: info.updateMechanism ?? null,
@@ -329,6 +266,7 @@ async function verifyIdentity(run: Run, app: ElectronApplication, page: Page): P
   check(facts.appPathIsAsar, `the app loads from ${path.join(pkg.resources, 'app.asar')}, not ${main.appPath}`)
   check(facts.execPathIsPackagedExe, `the running executable is the packaged ${pkg.exe}, not ${main.execPath}`)
   check(facts.exeSha256Matches, `the executable's sha256 ${exeSha256} differs from the manifest's ${pkg.exeSha256}`)
+  check(facts.nameIsCandidate, `the app is named ${main.name}: it must be the candidate's own name, not Hermes`)
   expect(info.commit, 'the app reports the commit it was built from').toBe(expectedCommit)
   expect(info.payload, 'the build stamp says the runtime is bundled').toBe('bundled')
   expect(info.hermesRuntime?.type, 'the app runs the runtime it carries').toBe('embedded')
@@ -393,6 +331,10 @@ async function verifyBackend(run: Run, app: ElectronApplication, page: Page): Pr
   const own = processesInside(everything, pkg.root)
   const foreign = foreignHermesProcesses(everything, pkg.root)
 
+  // The gateways of one OS user find each other through a rendezvous directory: the one this gateway published its
+  // record in must be inside the sandbox, so it can neither have attached to, nor been found by, a real backend.
+  const rendezvous = rendezvousProblems(readHostRecords(lockDirectories(contract.layout)), contract.layout, found.pid)
+
   observations.backend = {
     codeSha: found.codeSha ?? null,
     command: redact(found.command),
@@ -404,7 +346,9 @@ async function verifyBackend(run: Run, app: ElectronApplication, page: Page): Pr
     ownership: found.ownership,
     pid: found.pid,
     port,
-    processesFromPackage: countByImage(own)
+    processesFromPackage: countByImage(own),
+    rendezvousInsideSandbox: rendezvous.length === 0,
+    rendezvousProblems: rendezvous
   }
 
   expect(installedCommit, 'the install stamp inside the package names the commit under test').toBe(expectedCommit)
@@ -416,6 +360,7 @@ async function verifyBackend(run: Run, app: ElectronApplication, page: Page): Pr
     foreign.map(entry => `${entry.pid} ${entry.executable}`),
     'no Hermes or Python process runs from anywhere else'
   ).toEqual([])
+  expect(rendezvous, "the started gateway's rendezvous is the sandbox's own").toEqual([])
 
   if (found.ownership === 'host-gateway') {
     expect(found.codeSha, 'the canonical gateway stamped the commit under test into its own state').toBe(expectedCommit)
@@ -538,14 +483,14 @@ test.describe('clarify drafts (packaged candidate)', () => {
   test('the packaged Windows candidate keeps unsent choices and text as recoverable drafts through a real clarify timeout', async () => {
     test.setTimeout(1_200_000)
 
-    if (!CANDIDATE_DIR) {
+    if (!CONFIG.candidateDir) {
       throw new Error('HERMES_E2E_REQUIRE_PACKAGED=1 but HERMES_E2E_CANDIDATE_DIR names no extracted candidate package')
     }
 
-    const pkg = readCandidatePackage(CANDIDATE_DIR)
-    const expectedCommit = EXPECTED_COMMIT || pkg.manifest.source.commit
+    const pkg = readCandidatePackage(CONFIG.candidateDir)
+    const expectedCommit = CONFIG.expectedCommit || pkg.manifest.source.commit
     const observations: Observations = { completed: false, package: { name: pkg.manifest.package, root: pkg.root } }
-    const rootArgs = SANDBOX_ROOT ? ['-Root', SANDBOX_ROOT] : []
+    const rootArgs = CONFIG.sandboxRoot ? ['-Root', CONFIG.sandboxRoot] : []
     const mock = await startMockServer()
     let run: Run | null = null
 
@@ -573,14 +518,17 @@ test.describe('clarify drafts (packaged candidate)', () => {
         runClarifyScenario(active, page))
       await test.step('stop leaves nothing running from the package', () => stopCandidate(active))
 
-      if (DECOY_HOME) {
+      if (CONFIG.decoyHome) {
         check(
-          !fs.existsSync(DECOY_HOME),
-          `the decoy Hermes home ${DECOY_HOME} was created: something used the exported HERMES_HOME`
+          !fs.existsSync(CONFIG.decoyHome),
+          `the decoy Hermes home ${CONFIG.decoyHome} was created: something used the exported HERMES_HOME`
         )
       }
 
-      observations.isolation = { ...(observations.isolation as object), decoyHomeUntouched: DECOY_HOME ? true : null }
+      observations.isolation = {
+        ...(observations.isolation as object),
+        decoyHomeUntouched: CONFIG.decoyHome ? true : null
+      }
       observations.completed = true
     } finally {
       // Always leave the runner clean and the evidence complete, pass or fail.

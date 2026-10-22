@@ -487,6 +487,19 @@ def test_watched_locations_must_stay_absent_and_the_message_names_the_stage(tmp_
         evidence.main(["sentinels", "--out", str(before), "--watch", "no-separator"])
 
 
+def test_isolation_gates_the_per_os_user_gateway_rendezvous(tmp_path, monkeypatch, capsys):
+    """One gateway per OS user rendezvous in %USERPROFILE%\\.local\\state\\hermes: using the real one can attach to a real backend."""
+    _real_profile(tmp_path, monkeypatch)
+    before, after = tmp_path / "before.json", tmp_path / "after.json"
+    assert evidence.main(["sentinels", "--out", str(before)]) == 0
+    assert json.loads(before.read_text(encoding="utf-8-sig"))["dir:%USERPROFILE%/.local/state/hermes*"] is False
+    (tmp_path / "USERPROFILE" / ".local" / "state" / "hermes" / "gateway-locks").mkdir(parents=True)
+    assert evidence.main(["sentinels", "--out", str(after)]) == 0
+    capsys.readouterr()
+    assert evidence.main(["isolation", "--before", str(before), "--after", str(after)]) == 1
+    assert "real-install location: dir:%USERPROFILE%/.local/state/hermes* (entries: hermes)" in capsys.readouterr().err
+
+
 def test_a_watched_pattern_catches_whatever_new_entry_it_matches(tmp_path, monkeypatch, capsys):
     _real_profile(tmp_path, monkeypatch)
     watch = ["--watch", "APPDATA/Hermes*", "--watch", "LOCALAPPDATA/hermes-*"]
