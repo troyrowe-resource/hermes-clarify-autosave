@@ -33,6 +33,7 @@ import { type MockServerOptions, startMockServer } from '../../../tests-js/scrip
 
 import { resolveElectronBinary } from './electron-binary'
 import { sandboxHomeEnv } from './sandbox-home-env'
+import { canonicalPath, samePath } from './sandbox-path'
 import { installErrorBannerGuard } from './test'
 
 const DESKTOP_ROOT = path.resolve(import.meta.dirname, '..')
@@ -113,9 +114,10 @@ export interface Sandbox {
 }
 
 export function createSandbox(prefix: string): Sandbox {
-  // Canonical path: the backend resolves HERMES_HOME, so a symlinked tmpdir (macOS /var, a
-  // symlinked scratch dir) would otherwise make every HERMES_HOME match against the sandbox miss.
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `hermes-e2e-${prefix}-${Math.random()}`)))
+  // Canonical path: the backend resolves HERMES_HOME, so a symlinked tmpdir (macOS /var, a symlinked scratch
+  // dir) or a Windows 8.3 short name (a runner's TEMP is C:\Users\RUNNER~1\..., the backend records
+  // C:\Users\runneradmin\...) would otherwise make every HERMES_HOME match against the sandbox miss.
+  const root = canonicalPath(fs.mkdtempSync(path.join(os.tmpdir(), `hermes-e2e-${prefix}-${Math.random()}`)))
   const hermesHome = path.join(root, 'hermes-home')
   const userDataDir = path.join(root, 'electron-user-data')
 
@@ -152,14 +154,17 @@ export function createSandbox(prefix: string): Sandbox {
     hermesHome,
     userDataDir,
     cleanup: () => {
-      // Desktop attaches to the gateway it ensured and never stops it: a daemon left running keeps
-      // writing into (and, on Windows, locking) this sandbox, so stop it before removing anything.
-      stopSandboxGatewayDaemons({ hermesHome })
-
       try {
-        fs.rmSync(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 })
-      } catch {
-        // best-effort
+        // Desktop attaches to the gateway it ensured and never stops it: a daemon left running keeps
+        // writing into (and, on Windows, locking) this sandbox, so stop it before removing anything. A
+        // daemon that cannot be stopped throws: an orphan must not go unnoticed.
+        stopSandboxGatewayDaemons({ hermesHome })
+      } finally {
+        try {
+          fs.rmSync(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 })
+        } catch {
+          // best-effort
+        }
       }
     },
   }
@@ -174,11 +179,17 @@ function sleepSync(ms: number): void {
 function processAlive(pid: number): boolean {
   try {
     process.kill(pid, 0)
-
-    return true
   } catch (error) {
     // EPERM: it exists but is not ours to signal; only ESRCH means gone.
     return (error as NodeJS.ErrnoException).code === 'EPERM'
+  }
+
+  // A zombie (dead, not yet reaped: a container without an init) still answers signal 0. Without /proc (Windows,
+  // macOS) there are no zombies to tell apart.
+  try {
+    return !/^\d+ \(.*\) Z/.test(fs.readFileSync(`/proc/${pid}/stat`, 'utf8'))
+  } catch {
+    return true
   }
 }
 
@@ -204,27 +215,71 @@ function isSandboxGateway(pid: number, hermesHome: string): boolean {
   return process.platform === 'win32' ? /python/i.test(probe.stdout ?? '') : /hermes_cli/.test(probe.stdout ?? '')
 }
 
-/** The pid of the daemon recorded in the sandbox's `gateway.lock` (the lock names its own home), or null. */
-export function sandboxGatewayPid(hermesHome: string): number | null {
-  try {
-    const lock = JSON.parse(fs.readFileSync(path.join(hermesHome, 'gateway.lock'), 'utf8')) as { hermes_home?: string; pid?: number }
-    const pid = Number(lock.pid)
+interface GatewayLockRecord {
+  hermes_home?: string
+  pid?: number
+}
 
-    if (!Number.isInteger(pid) || pid <= 0 || (lock.hermes_home && path.resolve(lock.hermes_home) !== path.resolve(hermesHome))) {
-      return null
+/**
+ * The record the gateway daemon wrote into the sandbox's `gateway.lock` (its pid and its canonical HERMES_HOME), or
+ * null when there is none: the daemon never booted (no file) or died before writing one (an empty file). A record
+ * that cannot be read is an error, never "no gateway": a daemon we cannot see is a daemon we cannot stop.
+ */
+function readGatewayLock(hermesHome: string): GatewayLockRecord | null {
+  const file = path.join(hermesHome, 'gateway.lock')
+
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const text = fs.readFileSync(file, 'utf8')
+
+      return text.trim() ? (JSON.parse(text) as GatewayLockRecord) : null
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return null
+      }
+
+      // A daemon rewrites its record at boot (truncate, then write): a read in between sees it partial.
+      if (error instanceof SyntaxError && attempt < 10) {
+        sleepSync(100)
+
+        continue
+      }
+
+      throw new Error(`cannot read the sandbox gateway lock ${file}: ${(error as Error).message}`)
     }
-
-    return processAlive(pid) && isSandboxGateway(pid, hermesHome) ? pid : null
-  } catch {
-    // No lock (it never booted) or an unreadable one: nothing to stop.
-    return null
   }
 }
 
 /**
- * Stop the detached `gateway run` daemon `hermes gateway ensure` started for this sandbox: SIGTERM, then
- * SIGKILL after 15 s (Windows ends the process at once). Returns the pid it stopped, or null when none ran.
- * A fresh backend after this is a NEW process: the next launch's ensure starts another one.
+ * The pid of the live gateway daemon of this sandbox, or null when none runs (it never booted, or it exited: a
+ * stopped daemon leaves its record behind). A live process that holds the sandbox's lock but is not provably this
+ * sandbox's gateway throws instead of being ignored or killed on a guess.
+ */
+export function sandboxGatewayPid(hermesHome: string): number | null {
+  const lock = readGatewayLock(hermesHome)
+  const pid = Number(lock?.pid)
+
+  if (!lock || !Number.isInteger(pid) || pid <= 0 || !processAlive(pid)) {
+    return null
+  }
+
+  // The daemon records its CANONICAL home (a Windows 8.3 short name is expanded): compare canonical spellings.
+  if (lock.hermes_home && !samePath(lock.hermes_home, hermesHome)) {
+    throw new Error(`live pid ${pid} holds ${hermesHome}/gateway.lock but records the home ${lock.hermes_home}`)
+  }
+
+  if (!isSandboxGateway(pid, hermesHome)) {
+    throw new Error(`live pid ${pid} holds ${hermesHome}/gateway.lock but is not a Hermes gateway process`)
+  }
+
+  return pid
+}
+
+/**
+ * Stop the detached `gateway run` daemon `hermes gateway ensure` started for this sandbox: SIGTERM, then SIGKILL
+ * after 15 s; on Windows (no graceful signal) the daemon and its children end at once. Returns the pid it stopped,
+ * or null when none ran, and throws when the daemon is still alive afterwards. A fresh backend after this is a NEW
+ * process: the next launch's ensure starts another one.
  */
 export function stopSandboxGatewayDaemons(sandbox: Pick<Sandbox, 'hermesHome'>): number | null {
   const pid = sandboxGatewayPid(sandbox.hermesHome)
@@ -241,18 +296,27 @@ export function stopSandboxGatewayDaemons(sandbox: Pick<Sandbox, 'hermesHome'>):
     }
   }
 
-  signal('SIGTERM')
-
-  for (const deadline = Date.now() + 15_000; processAlive(pid) && Date.now() < deadline; ) {
-    sleepSync(100)
-  }
-
-  if (processAlive(pid)) {
-    signal('SIGKILL')
-
-    for (const deadline = Date.now() + 10_000; processAlive(pid) && Date.now() < deadline; ) {
+  const waitGone = (seconds: number) => {
+    for (const deadline = Date.now() + seconds * 1000; processAlive(pid) && Date.now() < deadline; ) {
       sleepSync(100)
     }
+  }
+
+  if (process.platform === 'win32') {
+    spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { timeout: 30_000, windowsHide: true })
+  } else {
+    signal('SIGTERM')
+    waitGone(15)
+
+    if (processAlive(pid)) {
+      signal('SIGKILL')
+    }
+  }
+
+  waitGone(10)
+
+  if (processAlive(pid)) {
+    throw new Error(`the sandbox gateway (pid ${pid}) is still running after it was stopped`)
   }
 
   return pid
@@ -481,11 +545,15 @@ export async function setupMockBackend(options: MockBackendOptions = {}): Promis
       // `fixture.app`, not the first launch: `relaunchDesktop` replaces it in place.
       await fixture.app.close().catch(() => undefined)
       // The gateway outlives the app (attach mode): stop it, then keep its logs for the evidence artifact
-      // (pass or fail), then drop the sandbox.
-      stopSandboxGatewayDaemons(sandbox)
-      preserveSandboxLogs(sandbox)
-      await mock.close()
-      sandbox.cleanup()
+      // (pass or fail), then drop the sandbox. A daemon that cannot be stopped still gets its logs kept and its
+      // sandbox dropped, and then fails the teardown.
+      try {
+        stopSandboxGatewayDaemons(sandbox)
+      } finally {
+        preserveSandboxLogs(sandbox)
+        await mock.close()
+        sandbox.cleanup()
+      }
     },
   }
 

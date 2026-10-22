@@ -399,28 +399,49 @@ STEPS = {"verify-package": "success", "packaged-e2e": "success", "isolation": "s
 def test_the_acceptance_verdict_passes_only_when_every_part_of_it_does(tmp_path):
     manifest, archive_verify, evidence = _verdict_inputs(tmp_path)
     verdict = candidate.build_verdict(manifest, archive_verify, evidence, STEPS)
-    assert verdict["passed"] is True and verdict["problems"] == []
+    assert verdict["verdict"] == "passed" and verdict["problems"] == []
     assert verdict["commit"] == COMMIT and verdict["archive"]["sha256"] == manifest["archive"]["sha256"]
     assert verdict["signing"] == "unsigned" and verdict["publication"] == "disabled"
     assert sorted(verdict["packaged_evidence"]) == ["direct", "launcher"] and "any other machine" in verdict["scope"]
 
     failed = candidate.build_verdict(manifest, archive_verify, evidence, {**STEPS, "isolation": "failure"})
-    assert failed["passed"] is False and any("isolation was failure" in problem for problem in failed["problems"])
-    assert candidate.build_verdict(manifest, archive_verify, evidence, {**STEPS, "packaged-e2e": "skipped"})["passed"] is False
+    assert failed["verdict"] == "failed" and any("isolation was failure" in problem for problem in failed["problems"])
+    assert candidate.build_verdict(manifest, archive_verify, evidence, {**STEPS, "packaged-e2e": "skipped"})["verdict"] == "failed"
 
     other_zip = {**archive_verify, "facts": {**archive_verify["facts"], "sha256": "0" * 64}}
-    assert not candidate.build_verdict(manifest, other_zip, evidence, STEPS)["passed"]
-    assert not candidate.build_verdict(manifest, {**archive_verify, "verdict": "failed"}, evidence, STEPS)["passed"]
+    assert candidate.build_verdict(manifest, other_zip, evidence, STEPS)["verdict"] == "failed"
+    assert candidate.build_verdict(manifest, {**archive_verify, "verdict": "failed"}, evidence, STEPS)["verdict"] == "failed"
 
 
 def test_one_failing_packaged_run_fails_the_verdict_and_is_named(tmp_path):
     manifest, archive_verify, evidence = _verdict_inputs(tmp_path)
     broken = {**evidence, "direct": {**evidence["direct"], "verdict": "failed", "problems": ["x"]}}
     verdict = candidate.build_verdict(manifest, archive_verify, broken, STEPS)
-    assert verdict["passed"] is False
+    assert verdict["verdict"] == "failed"
     assert "direct evidence did not verify" in verdict["problems"] and "direct evidence: x" in verdict["problems"]
     assert "launcher evidence did not verify" not in verdict["problems"]
     assert "no packaged-app evidence was given" in candidate.build_verdict(manifest, archive_verify, {}, STEPS)["problems"]
+
+
+def test_the_workflow_gate_reads_the_acceptance_verdict_and_names_the_failing_run(tmp_path, monkeypatch):
+    """`evidence.py gate --verify` takes {verdict, problems}: the acceptance verdict must pass or fail the job by itself."""
+    spec = importlib.util.spec_from_file_location("clarify_ci_evidence_gate", Path(__file__).with_name("evidence.py"))
+    assert spec is not None and spec.loader is not None
+    gate = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gate)
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    manifest, archive_verify, evidence = _verdict_inputs(tmp_path)
+
+    def gated(evidence_runs) -> int:
+        verdict_file = tmp_path / "acceptance-verdict.json"
+        verdict_file.write_text(json.dumps(candidate.build_verdict(manifest, archive_verify, evidence_runs, STEPS)), encoding="utf-8")
+        return gate.main(["gate", "--outcome", "accept=success", "--verify", str(verdict_file)])
+
+    assert gated(evidence) == 0
+    broken = {**evidence, "direct": {**evidence["direct"], "verdict": "failed", "problems": ["a real location appeared"]}}
+    assert gated(broken) == 1
+    assert "direct evidence: a real location appeared" in summary.read_text(encoding="utf-8-sig")
 
 
 def test_cli_verdict_and_bundle_env(tmp_path, capsys):
@@ -434,7 +455,7 @@ def test_cli_verdict_and_bundle_env(tmp_path, capsys):
             "--evidence-verdict", f"launcher={paths['launcher']}", "--evidence-verdict", f"direct={paths['direct']}",
             "--out", str(out)]
     assert candidate.main(args + ["--outcome", "packaged-e2e=success"]) == 0
-    assert json.loads(out.read_text(encoding="utf-8-sig"))["passed"] is True
+    assert json.loads(out.read_text(encoding="utf-8-sig"))["verdict"] == "passed"
     assert candidate.main(args + ["--outcome", "packaged-e2e=failure"]) == 1
     assert "packaged-e2e was failure" in capsys.readouterr().err
     assert candidate.main(["verdict", "--manifest", str(paths["manifest"]), "--archive-verify", str(paths["archive"]),

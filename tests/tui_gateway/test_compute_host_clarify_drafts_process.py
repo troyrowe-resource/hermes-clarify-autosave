@@ -25,6 +25,11 @@ from tui_gateway import host_supervisor, server
 from tui_gateway.host_supervisor import HostSupervisor
 from tui_gateway.transport import bind_transport, reset_transport
 
+# The real child + supervisor pair is POSIX-only in practice, not refused: ``host_supervisor`` reaps and recognizes its
+# host with ``os.kill(pid, 0)`` (a CTRL_C_EVENT on Windows, flagged by scripts/check-windows-footguns.py), ``signal.SIGKILL``
+# (absent there) and ``/proc`` / ``ps``, and the product's own real-child tests are ``platforms("linux")``
+# (test_compute_host.py). The relay logic itself is OS-neutral and runs on Windows in
+# test_compute_host_clarify_drafts.py (a fake supervisor and a real ``ComputeHost`` over an in-memory pipe).
 pytestmark = pytest.mark.platforms("posix")
 
 CHILD = Path(__file__).with_name("_compute_host_clarify_child.py")

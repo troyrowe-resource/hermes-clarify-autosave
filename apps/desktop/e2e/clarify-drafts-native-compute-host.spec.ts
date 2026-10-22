@@ -80,8 +80,12 @@ const COMPUTE_HOST_REGISTRY = path.join('state', 'dashboard-compute-host.json')
 
 test.describe.configure({ mode: 'serial' })
 
-// The compute host is POSIX process supervision (process groups, SIGKILL); the process table is read with `ps`.
-test.skip(process.platform === 'win32', 'the compute-host child is not supported on Windows')
+// Turn isolation's compute-host child is POSIX-only in practice, not refused: the product reads `dashboard.turn_isolation`
+// on every OS, but tui_gateway/host_supervisor.py has Windows footguns the repo's own linter flags (:109 `os.kill(pid, 0)`
+// is a CTRL_C_EVENT on Windows, :517 `signal.SIGKILL` does not exist there, :127 it finds its child only via /proc or `ps`)
+// and the product's real-child tests are `platforms('linux')` (tests/tui_gateway/test_compute_host.py:30). This spec also
+// reads the process table with `ps` and kills the backend with SIGKILL. It belongs in a Linux job.
+test.skip(process.platform === 'win32', 'turn isolation (the compute-host child) is POSIX-only in practice: host_supervisor.py:109/:517')
 
 let mock: MockServer
 let backendBox: CoreSandbox

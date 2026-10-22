@@ -12,6 +12,8 @@ import pytest
 
 from tui_gateway.host_supervisor import HostSupervisor
 
+# ``HostSupervisor`` is POSIX-only in practice (``os.kill(pid, 0)`` is a CTRL_C_EVENT on Windows, ``signal.SIGKILL`` does
+# not exist there, ``/proc`` / ``ps`` identify its host); see test_compute_host_clarify_drafts_process.py.
 pytestmark = pytest.mark.platforms("posix")
 
 # A host that says hello, reads the first frame the supervisor sends and dies without answering it.

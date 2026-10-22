@@ -41,6 +41,7 @@ import {
   listEntries,
   processesInside,
   readCandidatePackage,
+  readHostRecords,
   readMainFacts,
   readPackagedConfig,
   readVersionInfo,
@@ -74,6 +75,8 @@ type Observations = Record<string, unknown>
 
 const check = (condition: boolean, message: string): void => expect(condition, message).toBe(true)
 
+const samePathOrNull = (value: null | string, expected: string): boolean => value !== null && samePath(value, expected)
+
 /** A person's environment: the machine's own, minus the dev-tree decoys the launcher run proved are withheld. */
 function directEnvironment(): Record<string, string> {
   const decoys = new Set(CONFIG.decoys.map(name => name.toUpperCase()))
@@ -87,19 +90,36 @@ function directEnvironment(): Record<string, string> {
   )
 }
 
-/** The renderer has something to show: the composer, or the first-run provider choice (no provider is configured). */
-async function waitForInteractive(page: Page, timeoutMs: number): Promise<void> {
+/** The renderer mounted and the preload bridge answers; what it shows depends on the first-run state of a fresh home. */
+async function waitForRenderer(page: Page, timeoutMs: number): Promise<void> {
   await page.waitForFunction(
-    () => {
-      const text = document.getElementById('root')?.textContent ?? ''
-
-      return (
-        Boolean(document.querySelector('[data-slot="composer-root"]')) || /provider|Choose|API key|Sign in/i.test(text)
-      )
-    },
+    () =>
+      Boolean((window as unknown as { hermesDesktop?: unknown }).hermesDesktop) &&
+      (document.getElementById('root')?.childElementCount ?? 0) > 0,
     undefined,
     { timeout: timeoutMs }
   )
+}
+
+interface Connection {
+  apiOrigin: null | string
+  baseUrl: null | string
+  mode: null | string
+}
+
+/** What the renderer is connected to, or nothing yet (the backend may still be starting). */
+function readConnection(page: Page): Promise<Connection> {
+  return page.evaluate(async (): Promise<Connection> => {
+    const bridge = (window as unknown as { hermesDesktop?: ConnectionBridge }).hermesDesktop
+
+    try {
+      const { baseUrl, gatewayEndpoint, mode } = (await bridge?.getConnection()) ?? {}
+
+      return { apiOrigin: gatewayEndpoint?.api_origin ?? null, baseUrl: baseUrl ?? null, mode: mode ?? null }
+    } catch {
+      return { apiOrigin: null, baseUrl: null, mode: null }
+    }
+  })
 }
 
 const readText = (file: string): string => {
@@ -189,7 +209,7 @@ test.describe('clarify drafts (packaged candidate, started directly)', () => {
         )
       })
 
-      await waitForInteractive(page, 300_000)
+      await waitForRenderer(page, 300_000)
       await waitForWindowVisible(started, page, 60_000)
       await shot(page, 'packaged-direct-01-first-window.png')
 
@@ -237,19 +257,19 @@ test.describe('clarify drafts (packaged candidate, started directly)', () => {
       check(!facts.userDataSwitchPassed, 'the harness must not pass --user-data-dir: the build decides by itself')
 
       // The local backend came up from the package, not from anything the real profile offers.
-      const connection = await page.evaluate(async () => {
-        const bridge = (window as unknown as { hermesDesktop?: ConnectionBridge }).hermesDesktop
+      let connection = await readConnection(page)
 
-        try {
-          const { baseUrl, gatewayEndpoint, mode } = (await bridge?.getConnection()) ?? {}
+      await expect
+        .poll(
+          async () => {
+            connection = await readConnection(page)
 
-          return { apiOrigin: gatewayEndpoint?.api_origin ?? null, baseUrl: baseUrl ?? null, mode: mode ?? null }
-        } catch {
-          return { apiOrigin: null, baseUrl: null, mode: null }
-        }
-      })
+            return connection.mode
+          },
+          { intervals: [2_000], message: 'the window talks to the local backend it started', timeout: 180_000 }
+        )
+        .toBe('local')
 
-      expect(connection.mode, 'the window talks to the local backend it started').toBe('local')
       const port = Number(new URL(connection.apiOrigin ?? connection.baseUrl ?? 'http://127.0.0.1:0').port)
       let backend: BackendProcess | undefined
 
@@ -304,6 +324,25 @@ test.describe('clarify drafts (packaged candidate, started directly)', () => {
         'desktop.log says a hermes:// handler was registered, which a commit build must never do'
       )
       await shot(page, 'packaged-direct-02-before-quit.png')
+
+      // The per-OS-user rendezvous is read from the real profile: the gateway is still running, so its record is
+      // there. Evidence only; the workflow's strict sentinel is what fails a run that created it.
+      const rendezvousDir = path.join(userProfile!, '.local', 'state', 'hermes', 'gateway-locks')
+      const records = readHostRecords([rendezvousDir])
+
+      observations.rendezvous = {
+        dir: rendezvousDir,
+        files: listEntries(rendezvousDir),
+        recordsNameCandidateHome:
+          records.length > 0 && records.every(record => samePathOrNull(record.home, expectedHome)),
+        records: records.map(({ file, home, pid, port: recordPort, role }) => ({
+          file,
+          home,
+          pid,
+          port: recordPort,
+          role
+        }))
+      }
 
       observations.quit = await quit(started, 45_000)
       app = null

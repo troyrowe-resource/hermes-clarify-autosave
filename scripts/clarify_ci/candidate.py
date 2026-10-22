@@ -482,7 +482,7 @@ def build_verdict(manifest: dict, archive_verify: dict, evidence: dict[str, dict
     return {
         "schema": 1,
         "kind": "hermes-clarify-autosave-windows-candidate-acceptance",
-        "passed": not problems,
+        "verdict": "failed" if problems else "passed",
         "problems": problems,
         "commit": (manifest.get("source") or {}).get("commit"),
         "package": manifest.get("package"),
@@ -565,9 +565,10 @@ def _verdict(args) -> int:
     _write_json(Path(args.out), verdict)
     for problem in verdict["problems"]:
         print(f"::error::candidate acceptance: {problem}", file=sys.stderr)
-    print(f"candidate acceptance: {'PASSED' if verdict['passed'] else 'FAILED'} for {verdict['package']} "
+    passed = verdict["verdict"] == "passed"
+    print(f"candidate acceptance: {'PASSED' if passed else 'FAILED'} for {verdict['package']} "
           f"(zip sha256 {verdict['archive']['sha256']})")
-    return 0 if verdict["passed"] else 1
+    return 0 if passed else 1
 
 
 def _bundle_env(_args) -> int:
