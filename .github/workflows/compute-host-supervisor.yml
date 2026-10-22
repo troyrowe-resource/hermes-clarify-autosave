@@ -5,13 +5,9 @@ name: Compute-host supervisor - native process tests
 # real-process tests on standard hosted Windows and Linux runners: each job runs the tests marked for
 # its own OS plus the platforms("any") contracts. Upstream's tests-os.yml covers these files through
 # scripts/ci/list_os_marked_tests.py; that workflow is not active in this repository.
+# Manual only, like every workflow here (README: CI is deliberately isolated).
 
 on:
-  push:
-    paths:
-      - tui_gateway/host_supervisor.py
-      - tests/tui_gateway/test_host_supervisor_processes.py
-      - .github/workflows/compute-host-supervisor.yml
   workflow_dispatch:
 
 permissions:
