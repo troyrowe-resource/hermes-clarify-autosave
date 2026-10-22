@@ -86,7 +86,10 @@ test.describe.configure({ mode: 'serial' })
 // is a CTRL_C_EVENT on Windows, :517 `signal.SIGKILL` does not exist there, :127 it finds its child only via /proc or `ps`)
 // and the product's real-child tests are `platforms('linux')` (tests/tui_gateway/test_compute_host.py:30). This spec also
 // reads the process table with `ps` and kills the backend with SIGKILL. It belongs in a Linux job.
-test.skip(process.platform === 'win32', 'turn isolation (the compute-host child) is POSIX-only in practice: host_supervisor.py:109/:517')
+test.skip(
+  process.platform === 'win32',
+  'turn isolation (the compute-host child) is POSIX-only in practice: host_supervisor.py:109/:517'
+)
 
 let mock: MockServer
 let backendBox: CoreSandbox
@@ -253,7 +256,9 @@ test.describe('clarify drafts (native, remote hermes serve backend with turn iso
     const [told] = clarifyToolResults(mock, from)
     expect(told.outcome).toBe('timed_out')
     expect(told.drafts_submitted).toBe(false)
-    expect(told.responses.every(response => response.status === 'unanswered' && response.user_response === null)).toBe(true)
+    expect(told.responses.every(response => response.status === 'unanswered' && response.user_response === null)).toBe(
+      true
+    )
     expect(
       Object.fromEntries(
         (told.drafts ?? []).map(({ question_id, selected_choices, typed_text }) => [
@@ -292,12 +297,16 @@ test.describe('clarify drafts (native, remote hermes serve backend with turn iso
     await settled.first().waitFor({ state: 'visible', timeout: 90_000 })
     await expect(settled).toHaveCount(1)
     await waitForFinalSettled(settled, 3)
-    expect((await readDraftRows(settled)).map(({ content, question }) => ({ content, question }))).toEqual(MIXED_DRAFT_ROWS)
+    expect((await readDraftRows(settled)).map(({ content, question }) => ({ content, question }))).toEqual(
+      MIXED_DRAFT_ROWS
+    )
 
     await settled.getByRole('button', { name: RECALL }).click()
     const recovered = settled.locator('[data-clarify-drafts-recovered="exact"]')
     await recovered.waitFor({ state: 'visible', timeout: 20_000 })
-    expect((await readDraftRows(recovered)).map(({ content, question }) => ({ content, question }))).toEqual(MIXED_DRAFT_ROWS)
+    expect((await readDraftRows(recovered)).map(({ content, question }) => ({ content, question }))).toEqual(
+      MIXED_DRAFT_ROWS
+    )
     expect(serverDraftRecords(backendBox.hermesHome).map(entry => entry.requestId)).toEqual([stored.requestId])
     await shot(page, 'native-compute-host-05-fresh-backend-recalled.png')
 

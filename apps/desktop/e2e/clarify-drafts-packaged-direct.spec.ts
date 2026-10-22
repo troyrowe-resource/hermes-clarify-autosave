@@ -381,20 +381,28 @@ async function verifyRegistrationSkipped(run: Run, page: Page): Promise<void> {
 }
 
 /**
- * The per-OS-user rendezvous is read from the real profile while the gateway is still running, so its record is
- * there. Evidence only: the workflow's strict sentinel is what fails a run that created the folder.
+ * A commit build keeps its gateway rendezvous inside its own home (`<home>/gateway-locks`, set by the app for
+ * commit builds: electron/backend-spawn-env.ts), so the per-OS-user rendezvous in the real profile must hold no
+ * record. Both are read while the gateway still runs; the workflow's strict sentinel also fails a run that
+ * created the per-user folder.
  */
 function recordRendezvous(run: Run): void {
-  const dir = path.join(run.profile.userProfile, '.local', 'state', 'hermes', 'gateway-locks')
-  const records = readHostRecords([dir])
+  const own = path.join(run.expected.home, 'gateway-locks')
+  const perUser = path.join(run.profile.userProfile, '.local', 'state', 'hermes', 'gateway-locks')
+  const ownRecords = readHostRecords([own])
+  const perUserRecords = readHostRecords([perUser])
 
   run.observations.rendezvous = {
-    dir,
-    files: listEntries(dir),
+    dir: own,
+    files: listEntries(own),
+    perUserDir: perUser,
+    perUserFiles: listEntries(perUser),
+    perUserRecordCount: perUserRecords.length,
     recordsNameCandidateHome:
-      records.length > 0 && records.every(record => samePathOrNull(record.home, run.expected.home)),
-    records: records.map(({ file, home, pid, port, role }) => ({ file, home, pid, port, role }))
+      ownRecords.length > 0 && ownRecords.every(record => samePathOrNull(record.home, run.expected.home)),
+    records: ownRecords.map(({ file, home, pid, port, role }) => ({ file, home, pid, port, role }))
   }
+  check(perUserRecords.length === 0, `the per-user gateway rendezvous ${perUser} holds a record from a direct start`)
 }
 
 /** Quit, then stop what the app left behind (its gateway outlives it): nothing may still run from the package. */

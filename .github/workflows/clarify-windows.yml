@@ -879,8 +879,8 @@ jobs:
       # machine may see is the candidate's own names: an empty HermesBundledCommit<sha7> and its suffixed twin in
       # %APPDATA%, hermes-clarify-candidate in %LOCALAPPDATA%. Those two patterns are reported, not gated; everything
       # else is: the exact installed-app names, the hermes:// registry keys, .hermes*, and the per-user gateway
-      # rendezvous (.local/state/hermes*). A direct start publishes its gateway record there today, so expect this
-      # check to name it until the product keeps a direct start out of it.
+      # rendezvous (.local/state/hermes*). A commit build keeps its rendezvous in its own home
+      # (electron/backend-spawn-env.ts), so any hit there is a failure.
       - name: Isolation preflight and evidence staging (direct run)
         id: direct-preflight
         if: always() && steps.verify-package.outcome == 'success'
@@ -953,6 +953,7 @@ jobs:
             --expect-observation "packaged-direct:deeplink.registrationSkippedForCommitBuild=true" \
             --expect-observation "packaged-direct:isolation.decoyHomeUntouched=true" \
             --expect-observation "packaged-direct:isolation.unexpectedRealProfileEntries=0" \
+            --expect-observation "packaged-direct:rendezvous.perUserRecordCount=0" \
             --expect-observation "packaged-direct:teardown.stopExitCode=0" \
             --expect-observation "packaged-direct:teardown.processesLeft=0" \
             --out "$CLARIFY_EVIDENCE/direct-verdict.json"
