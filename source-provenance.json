@@ -1,0 +1,17 @@
+{
+  "upstream_repository": "https://github.com/NousResearch/hermes-agent",
+  "source_repository": "https://github.com/troyrowe-resource/hermes-agent",
+  "source_branch": "fix/clarify-draft-preservation-20261022",
+  "source_commit": "b6a1a4e36fab77a974943e95e9e8ce224a8de632",
+  "purpose": "Independent cloud/Windows test candidate; not an official release or production deployment",
+  "snapshot_archive_sha256": "d0c72fe49a4d0cac2ce15c2ae6d65b7004233179c879965d37d5652a6f60c50d",
+  "source_paths": 20719,
+  "adaptations": [
+    "README.md preserved as README.upstream.md",
+    "Inherited workflows moved out of .github/workflows to reference/upstream-workflows; none may execute automatically",
+    "Root .gitignore extended to exclude cloud/Windows candidate evidence and tool caches",
+    "Added independent cloud task, repository README and manual Windows validation workflow"
+  ],
+  "native_windows_status": "not run",
+  "production_installed": false
+}
