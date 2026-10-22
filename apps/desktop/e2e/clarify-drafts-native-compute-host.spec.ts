@@ -297,6 +297,14 @@ test.describe('clarify drafts (native, remote hermes serve backend with turn iso
     await clearDeviceDrafts(page)
     expect(await deviceDraftEntries(page)).toEqual([])
     await newSession(page)
+    const samples: string[] = []
+    for (let attempt = 0; attempt < 24; attempt += 1) {
+      const text = await page.locator('[data-slot="sidebar"]').first().innerText().catch(error => `ERR ${error}`)
+      samples.push(`${attempt * 5}s: ${JSON.stringify(text).slice(0, 400)}`)
+      if (text.includes('compute-host-first')) break
+      await page.waitForTimeout(5000)
+    }
+    observations.sidebarSamples = samples
     await openTitledSession(page, `${MIXED_CLARIFY_TRIGGER} compute-host-first`)
 
     const settled = settledCards(page).filter({ visible: true })

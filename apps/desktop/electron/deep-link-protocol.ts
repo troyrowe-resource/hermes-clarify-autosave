@@ -2,9 +2,13 @@
  * `hermes://` deep-link registration. Every launch rewrites the OS handler (on Windows,
  * HKCU\Software\Classes\<protocol>), so a test or dev run of an unpackaged checkout would
  * repoint the user's installed handler at that checkout. `HERMES_DESKTOP_SKIP_PROTOCOL_REGISTRATION=1`
- * (set by the E2E harnesses) leaves the OS registration untouched; deep links that arrive
- * through argv / second-instance still route normally.
+ * (set by the E2E harnesses) leaves the OS registration untouched. So does a commit build (install
+ * stamp source 'commit-build'): it is a one-off build handed to a tester beside their real install,
+ * so launching it directly must not repoint that install's handler at it. Deep links that arrive
+ * through argv / second-instance / open-url still route normally in both cases.
  */
+
+import type { InstallStamp } from './install-stamp'
 
 export interface ProtocolRegistrar {
   setAsDefaultProtocolClient: (protocol: string, path?: string, args?: string[]) => boolean
@@ -20,13 +24,21 @@ export interface DeepLinkProtocolOptions {
   execPath: string
   resolve: (entry: string) => string
   log: (line: string) => void
+  /** The install stamp's provenance (`INSTALL_STAMP?.source`); null on a dev bundle, which has no stamp. */
+  source?: InstallStamp['source']
 }
 
 export function registerDeepLinkProtocol(options: DeepLinkProtocolOptions): void {
-  const { app, protocol, env, defaultApp, argv, execPath, resolve, log } = options
+  const { app, protocol, env, defaultApp, argv, execPath, resolve, log, source } = options
 
   if (env.HERMES_DESKTOP_SKIP_PROTOCOL_REGISTRATION === '1') {
     log(`[deeplink] ${protocol}:// registration skipped (HERMES_DESKTOP_SKIP_PROTOCOL_REGISTRATION)`)
+
+    return
+  }
+
+  if (source === 'commit-build') {
+    log(`[deeplink] ${protocol}:// registration skipped (commit build)`)
 
     return
   }
