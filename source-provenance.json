@@ -20,11 +20,11 @@
     "branch": "candidate/clarify-autosave-windows",
     "main_commit_at_start": "9cbb93849d305369ad060d449cb530f8d3f2a185",
     "first_candidate_commit": "4a92978697f386d7124e81d463f3a404ac4403fd",
-    "tested_commit": "{{RUN7_COMMIT}}",
+    "tested_commit": "f95d7404698d676c9724e95726d49f864fd14c5e",
     "final_commit": "The branch head. It carries documentation only and differs from tested_commit by documentation only. A commit cannot name itself, so read it from the branch head. The copy of this file inside the packaged MANIFEST.json is the copy at tested_commit (git show <tested_commit>:source-provenance.json), written before this run's results existed, so any status words or placeholders in it are not the verdict. This file at the branch head is the record",
     "changes": "Ten changes: (1) the Desktop asks the canonical gateway for one batch clarify request (clarify_batch on prompt.submit), gated so a legacy hermes serve sidecar and an older gateway are not broken; (2) the canonical gateway replays an open batch clarify, with its locked answers and drafts, in session.resume and session.events.since; (3) a clarify timeout shows one settled card, not two; (4) 'Show drafts saved on the server' and 'Discard drafts' survive the settled card's remount; (5) renderer robustness: offline edits re-sent, expired replies, method-not-found memos, cleared drafts and late acknowledgements; (6) compute-host (turn isolation) child relay for clarify.draft and clarify.drafts.discard, a Linux-tested, POSIX-only feature; (7) draft-store hardening (Windows directory ACLs, atomic replace, deleted named profiles, un-encodable UTF-8, persistence errors, .tmp residue) and settle_batch ignoring client-supplied drafts keys; (8) server drafts purged at session deletion through hermes_state_common.emit_session_deleted for every reason except archive; (9) hermes profile create --clone-all no longer copies clarify_drafts; (10) Desktop isolation: userData decided before modules read it, a commit build never registers the OS hermes:// handler, and a commit build uses its own gateway lock directory. Detail and files: docs/clarify-candidate/HANDOFF.md"
   },
-  "native_windows_status": "Windows native job passed on b770aeda8471d74470222e1bddf38edd0f089371 in run 39780275912 (19 expected, 0 unexpected, 0 skipped, 0 flaky; Python 29 files, 428 passed, 0 failed, 7 skipped: 6 POSIX-only, 1 symlink-privilege). Acceptance run {{RUN7_ID}} on {{RUN7_COMMIT}}: Windows native {{RUN7_NATIVE}}, package {{RUN7_PACKAGE}}, accept {{RUN7_ACCEPT}}. Every run is listed in native_windows_runs",
+  "native_windows_status": "Windows native job passed on b770aeda8471d74470222e1bddf38edd0f089371 in run 39780275912 (19 expected, 0 unexpected, 0 skipped, 0 flaky; Python 29 files, 428 passed, 0 failed, 7 skipped: 6 POSIX-only, 1 symlink-privilege). Acceptance run 39828983109 on f95d7404698d676c9724e95726d49f864fd14c5e: Windows native passed: 19 expected, 0 unexpected, 0 skipped, 0 flaky; Windows Python 29 files, 428 passed, 0 failed, 7 skipped; launcher self-test 32 of 32 on PowerShell 5.1 and 7; Linux compute-host native 2/2 and Python 2 files, 39 passed; isolation unchanged, package passed in 42 min 16 s of its 60 (dependency cache restored and not saved again; prepare 23 min 35 s, build 12 min 18 s, zip 2 min 34 s): a bundled app of 115,772 files and 6,528,241,536 bytes, a zip of 3,224,710,153 bytes, accept passed: the zip's digest matched the package job's output and all 115,778 extracted files matched FILES.sha256; the launcher run (a contract with 0 problems, a real 40-second clarify timeout, both drafts confirmed on the server and recalled from it, the model told they were not submitted, Stop exit 0, no process left) and the direct run both passed, with no watched real location changed. Every run is listed in native_windows_runs",
   "native_windows_runs": [
     {
       "run_url": "https://github.com/troyrowe-resource/hermes-clarify-autosave/actions/runs/39740118224",
@@ -90,28 +90,28 @@
       "summary": "All five jobs passed. Launcher self-test 31 of 31 on PowerShell 5.1 and 7; Windows native 19 expected, 0 unexpected, 0 skipped, 0 flaky; Windows Python 29 files, 428 passed, 0 failed, 7 skipped; Linux compute-host native 2/2 and Python 2 files, 39 passed; package 55 min 38 s of its 60 (zip HermesClarifyCandidate-026e3ec-win-x64.zip, SHA-256 0b8a7227..., artifact digest 92e53e14...; the lead re-hashed the artifact, the zip and all 115,778 listed files: matched); accept passed: archive verified, the launcher run (a real 40-second clarify timeout, both drafts confirmed on the server and recalled from it, the model told they were not submitted, Stop exit 0, no process left) and the direct run. Its launcher still passed TMPDIR through (Python temp files outside the sandbox) and had latent filter defects, fixed in f95d7404."
     },
     {
-      "run_url": "{{RUN7_URL}}",
-      "run_id": "{{RUN7_ID}}",
-      "commit": "{{RUN7_COMMIT}}",
+      "run_url": "https://github.com/troyrowe-resource/hermes-clarify-autosave/actions/runs/39828983109",
+      "run_id": "39828983109",
+      "commit": "f95d7404698d676c9724e95726d49f864fd14c5e",
       "conclusion": "see windows_native, package and accept",
       "role": "acceptance run (full)",
-      "windows_native": "{{RUN7_NATIVE}}",
-      "package": "{{RUN7_PACKAGE}}",
-      "accept": "{{RUN7_ACCEPT}}"
+      "windows_native": "passed: 19 expected, 0 unexpected, 0 skipped, 0 flaky; Windows Python 29 files, 428 passed, 0 failed, 7 skipped; launcher self-test 32 of 32 on PowerShell 5.1 and 7; Linux compute-host native 2/2 and Python 2 files, 39 passed; isolation unchanged",
+      "package": "passed in 42 min 16 s of its 60 (dependency cache restored and not saved again; prepare 23 min 35 s, build 12 min 18 s, zip 2 min 34 s): a bundled app of 115,772 files and 6,528,241,536 bytes, a zip of 3,224,710,153 bytes",
+      "accept": "passed: the zip's digest matched the package job's output and all 115,778 extracted files matched FILES.sha256; the launcher run (a contract with 0 problems, a real 40-second clarify timeout, both drafts confirmed on the server and recalled from it, the model told they were not submitted, Stop exit 0, no process left) and the direct run both passed, with no watched real location changed"
     }
   ],
   "windows_artifact": {
-    "status": "package job: {{RUN7_PACKAGE}}; accept job: {{RUN7_ACCEPT}}",
-    "run_url": "{{RUN7_URL}}",
-    "artifact_name": "{{ARTIFACT_NAME}}",
-    "artifact_url": "{{ARTIFACT_URL}}",
-    "artifact_digest": "{{ARTIFACT_DIGEST}}",
-    "zip_sha256": "{{ZIP_SHA256}}",
-    "exe_sha256": "{{EXE_SHA256}}",
-    "downloaded_copy_rehashed": "{{REHASH}}",
+    "status": "package job: passed in 42 min 16 s of its 60 (dependency cache restored and not saved again; prepare 23 min 35 s, build 12 min 18 s, zip 2 min 34 s): a bundled app of 115,772 files and 6,528,241,536 bytes, a zip of 3,224,710,153 bytes; accept job: passed: the zip's digest matched the package job's output and all 115,778 extracted files matched FILES.sha256; the launcher run (a contract with 0 problems, a real 40-second clarify timeout, both drafts confirmed on the server and recalled from it, the model told they were not submitted, Stop exit 0, no process left) and the direct run both passed, with no watched real location changed",
+    "run_url": "https://github.com/troyrowe-resource/hermes-clarify-autosave/actions/runs/39828983109",
+    "artifact_name": "clarify-candidate-39828983109-1",
+    "artifact_url": "https://github.com/troyrowe-resource/hermes-clarify-autosave/actions/runs/39828983109/artifacts/12450159990",
+    "artifact_digest": "1de1005a4e8745c1688362b599cb816939800f5ec930bae4b4ec92dbcb08acd5",
+    "zip_sha256": "71f7187cfbde097a4024fd2015befd22e86d389eff00a80cf63e74ef942a2e3e",
+    "exe_sha256": "f55b279d1a1861ee3928654ab408af66ea6ef1f8eed7ad66c0c0d1cf06ebbdeb",
+    "downloaded_copy_rehashed": "yes. The lead downloaded the artifact (3,224,729,935 bytes) into the cloud container and, without extracting it, re-hashed the artifact, the zip inside it and every one of the 115,778 files FILES.sha256 lists, the exe included: all matched",
     "retention_days": 7,
-    "runtime_prerequisites": "If the package job produced a package ({{RUN7_PACKAGE}}), as recorded in its MANIFEST.json: Windows on x64; built and started only on a GitHub-hosted windows-2025 x64 runner (Windows Server 2025, build 26100), nothing older tried (Electron 40 needs Windows 10 or newer, but the project's own MSIX packaging floor is Windows 11 22H2, build 22621); no Python, Node, Git or Hermes installation is claimed to be required, because the candidate carries its own interpreter, dependencies, tools and this commit's source, but it was only run on a runner that has Python, Node and Git installed; the Microsoft Visual C++ 2015-2022 x64 redistributable is assumed present; about twice the zip size in free disk space; network access only for what you configure. Unsigned downloads trigger SmartScreen: unblock the zip before extracting. Start it only through Start-HermesClarifyCandidate.cmd, which isolates every state location and refuses to run against a real Hermes home. Tested only on a standard runner, never on another machine",
-    "publication": "The package job runs electron-builder with --publish never and no signing variables (package job: {{RUN7_PACKAGE}}). No GitHub Release or package is published. The zip is only a 7-day Actions artifact of this public repository, so any signed-in GitHub user can download it while it is retained; it holds only public source (built) and synthetic test evidence",
+    "runtime_prerequisites": "As run 39828983109's package records them in its MANIFEST.json: Windows on x64; built and started only on a GitHub-hosted windows-2025 x64 runner (Windows Server 2025, build 26100), nothing older tried (Electron 40 needs Windows 10 or newer, but the project's own MSIX packaging floor is Windows 11 22H2, build 22621); no Python, Node, Git or Hermes installation is claimed to be required, because the candidate carries its own interpreter, dependencies, tools and this commit's source, but it was only run on a runner that has Python, Node and Git installed; the Microsoft Visual C++ 2015-2022 x64 redistributable is assumed present; about twice the zip size in free disk space; network access only for what you configure. Unsigned downloads trigger SmartScreen: unblock the zip before extracting. Start it only through Start-HermesClarifyCandidate.cmd, which isolates every state location and refuses to run against a real Hermes home. Tested only on a standard runner, never on another machine",
+    "publication": "The package job runs electron-builder with --publish never and no signing variables (run 39828983109). No GitHub Release or package is published. The zip is only a 7-day Actions artifact of this public repository, so any signed-in GitHub user can download it while it is retained; it holds only public source (built) and synthetic test evidence",
     "signing": "unsigned: not Nous-signed and not a verified installer. No certificate was used or installed"
   },
   "production_installed": false
