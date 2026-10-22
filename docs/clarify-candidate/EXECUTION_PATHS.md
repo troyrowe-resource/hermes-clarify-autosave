@@ -67,7 +67,7 @@ wait times out. Detail and citations per route are in section 3.
 
 | ID | Route (client, backend, card shape) | (a) Protection at base | (b) Server save | (c) Recall / discard | (d) Model told at timeout | After candidate |
 |---|---|---|---|---|---|---|
-| R1 | Desktop, canonical local gateway (`gateway ensure`, WebSocket `native_dial`), unmodified Desktop: one card per question | **Device** | No: `clarify.draft` answers `expired` | Recall finds nothing; discard answers `missing`; the Desktop still removes its own copy | `timed_out`, `notice: "[user did not respond within Nm]"`, every response `unanswered`, no `drafts` | <!-- LEAD: post-fix verified state of R1 (commit, test, run) --> Pending |
+| R1 | Desktop, canonical local gateway (`gateway ensure`, WebSocket `native_dial`), unmodified Desktop: one card per question | **Device** | No: `clarify.draft` answers `expired` | Refused: the card's 10-hex id is not an `srq-` id, so both verbs answer `invalid_params` `[probe P6b]`; the card shows "Could not read the drafts saved on the server"; a discard still removes the Desktop's own copy | `timed_out`, `notice: "[user did not respond within Nm]"`, every response `unanswered`, no `drafts` | <!-- LEAD: post-fix verified state of R1 (commit, test, run) --> Pending |
 | R2 | Same owner, turn flagged `clarify_batch: true` (classic CLI at base; the Desktop once the candidate's change lands): one batch request, `session_owner` store | CLI: **None** (it never sends drafts). Desktop: **Server** plus Device once it declares the flag | Yes `[probe P8]`: `ok`, `durable: true` | Yes, for an attached `session:respond` viewer | `timed_out` plus `drafts`, `drafts_submitted: false`, `drafts_notice`, `drafts_request_id`, `drafts_durable`; no `notice` | <!-- LEAD: post-fix verified state of R2 --> Pending |
 | R3 | Desktop on a legacy transport (no `native_dial`), `tui_gateway` sidecar in process: one batch request, `tui_gateway` store | **Server** plus Device (the Desktop only; the Ink TUI on the same sidecar is R5) | Yes `[probe P4b]` | Yes (by request id, or the session's list) | As R2 | None planned |
 | R4 | R3 with `dashboard.turn_isolation: true` (default `false`): the compute-host child owns the request | **Device** | No: the parent answers `expired` `[probe P4]` | Recall finds nothing; discard answers `missing` | `timed_out`, no `drafts`, no `notice` `[probe P4]` | <!-- LEAD: post-fix verified state of the compute-host relay (commit, test) --> Pending |
@@ -110,7 +110,7 @@ How the owner chooses batch or per-question `[code]`
   (`apps/desktop/src/api/canonical-protocol.ts:23-34`, `apps/desktop/src/api/client.ts:126-176`) and
   sends its Confirm as `clarify.lock` rewritten to `clarify.respond` (`client.ts:401-407`).
 
-What happens to a draft `[code][probe P6]`
+What happens to a draft `[code][probe P6, P6b]`
 
 - The card still saves to the device on every edit (`clarify-drafts.ts:412-460`; status `device-only`
   by default, line `448`) and, after 600 ms (`:90`), calls `clarify.draft` (`sendDraft`, `:501-576`).
@@ -121,9 +121,14 @@ What happens to a draft `[code][probe P6]`
 - The Desktop reads `expired` as "the request ended": it stops sending for that request and shows
   `device-only` (`clarify-drafts.ts:558-562`), "Draft kept on this device only"
   (`apps/desktop/src/i18n/en_clarify.ts:21`).
-- Recall lists `session_owner/<digest>/` and finds nothing (`session_clarify_draft.py:68-75`); the card
-  says "The server holds no saved drafts for this form" (`en_clarify.ts:43`). Discard answers `missing`
-  (`session_clarify_draft.py:78-90`); the Desktop still removes its own copy (`clarify-drafts.ts:692-721`).
+- Recall and discard are refused, not empty. Both verbs accept only `srq-<12 hex>` ids
+  (`tools/clarify_drafts.py:46`, `126-127`; `gateway/session_clarify_draft.py:72-73`, `83-84`), and a
+  per-question card's id is 10 hex, so each answers `invalid_params` `[probe P6b]`; a session-wide listing
+  with no request id works and is empty. The Desktop maps the refusal to "Could not read the drafts saved on
+  the server" (`clarify-drafts.ts:824-832`; `en_clarify.ts:42`; `isMissingRpcMethod` matches a missing-method
+  error, not `invalid_params`, `apps/desktop/src/lib/gateway-rpc.ts:7-17`), and a discard reports that the server copy "could
+  not be removed" (`clarify-drafts.ts:709-720`; `en_clarify.ts:65`) while still removing its own copy
+  (`:697-698`). There was no server copy to remove.
 
 What the model is told `[code][probe P7]`
 
@@ -141,7 +146,8 @@ Native evidence `[CI][S2]`
   inference server logged its second chat completion 25.2 s after the first (07:29:07.98 and 07:29:33.17
   UTC), which is consistent with the wait expiring and the turn continuing.
 - The same run failed at `card.getByPlaceholder(/Other/).nth(1).fill(...)`
-  (`apps/desktop/e2e/clarify-drafts-native.spec.ts:56`): only the first question's card existed.
+  (`apps/desktop/e2e/clarify-drafts-native.spec.ts:56`), which is consistent with only the first question's
+  card having existed.
 
 Reconnect `[code]`: the attach snapshot re-delivers pending per-question prompts
 (`gateway/session_authority.py:344`; `client.ts:493-511`), so an open card survives a reconnect and its
@@ -288,7 +294,7 @@ list is the same after the candidate's Desktop change: only a batch request move
 | Desktop attached to a managed-worker execution (kanban card, `--safe-mode`, `--ignore-user-config`, or the opt-in `gateway.managed_workers`) | **Device** | The worker asks per question whatever the flag says | `agent/managed_worker.py:229-249`; `gateway/session_managed_worker.py:46-48`, `389-391` `[code]` |
 | Desktop card whose owner cannot be proven | **None** | No complete scope, so nothing is stored or sent; the card says "Not saved: this form could not confirm which conversation owns it" | `clarify-drafts.ts:197-206`; `.../clarify/pending-drafts.tsx:165-175`; `en_clarify.ts:35-36` `[code]` |
 | ACP editors | **None** | The editor shows its own prompt and answers with `clarify.respond` | `acp_adapter/gateway_server.py:1100-1128` `[code]` |
-| Raw WebSocket and other canonical clients | **None** from Hermes | They get the `clarify.request` event; `clarify.draft` for such an id answers `expired` | `[probe P6]` |
+| Raw WebSocket and other canonical clients | **None** from Hermes | They get the `clarify.request` event; `clarify.draft` for such an id answers `expired`, recall and discard `invalid_params` | `[probe P6, P6b]` |
 | `api_server` runs | **None** | Answered through `respond_run` | `gateway/platforms/api_server_authority_runs.py:100-110`, `113` `[code]` |
 | Ink TUI on the shared gateway | **None** | No draft code; answers with `clarify.respond` | `ui-tui/src/app/useMainApp.ts:857`, `897` `[code]` |
 | Messaging platforms | Not applicable | A tap or a typed reply is the answer; no staged state exists | R9 |
@@ -484,6 +490,7 @@ Recorded at `4a929786`:
 | P4b | Same registry: `ok`, `durable: true`; result keys `answers, drafts, drafts_durable, drafts_request_id, outcome`; record `("timed_out", 7)` |
 | P5 | A closing frame with `drafts` and `drafts_durable: true`: the model view carried both; 0 server records |
 | P6 | Real owner `clarify_draft` handler: `{'status': 'expired'}` for `0123456789` and for `srq-0123456789ab` |
+| P6b | Real owner handlers, entitlement stubbed: `clarify.drafts` and `clarify.drafts.discard` with `0123456789` raised `RuntimeStoreError('invalid_params')`; with `srq-0123456789ab` they answered `{'drafts': []}` and `{'status': 'missing'}`; `clarify.drafts` with no request id answered `{'drafts': []}` |
 | P7 | Model view for a per-question timeout: `outcome: timed_out`, `notice: "[user did not respond within 0m]"`, both responses `unanswered`, no `drafts` |
 | P8 | Owner batch registry: frame method `clarify`, id prefix `srq-`; `ok`, `durable: true`; result carried the draft block; record `("timed_out", 9)` |
 
@@ -639,6 +646,25 @@ for request_id in ("0123456789", "srq-0123456789ab"):
     reply = asyncio.run(owner_drafts.clarify_draft(stub, None, {
         "session_id": "s1", "request_id": request_id, "question_id": "q0", "choices": ["Tea"], "text": "x", "revision": 1}))
     out.setdefault("P6_owner_clarify_draft_reply_for_unknown_request", {})[request_id] = reply
+
+# P6b. Recall and discard take only `srq-` ids: a per-question card's own id is refused as `invalid_params`.
+from gateway import session_server_requests as owner_registry  # noqa: E402
+owner_registry.may_act_on_session = lambda authority, actor, session_id: True  # entitlement is not the question
+
+
+async def refusal_or_reply(fn, params):
+    try:
+        return await fn(stub, None, params)
+    except Exception as exc:  # RuntimeStoreError carries the reason
+        return {"raised": type(exc).__name__, "reason": getattr(exc, "reason", str(exc))}
+
+
+for request_id in ("0123456789", "srq-0123456789ab"):
+    out.setdefault("P6b_owner_recall_and_discard", {})[request_id] = {
+        "clarify.drafts": asyncio.run(refusal_or_reply(owner_drafts.clarify_drafts, {"session_id": "s1", "request_id": request_id})),
+        "clarify.drafts.discard": asyncio.run(refusal_or_reply(owner_drafts.clarify_drafts_discard, {"session_id": "s1", "request_id": request_id}))}
+out["P6b_owner_recall_and_discard"]["(no request id)"] = {
+    "clarify.drafts": asyncio.run(refusal_or_reply(owner_drafts.clarify_drafts, {"session_id": "s1"}))}
 
 # P7. What the model is told when a per-question messaging/owner card times out.
 out["P7_per_question_timeout_model_view"] = model_view(

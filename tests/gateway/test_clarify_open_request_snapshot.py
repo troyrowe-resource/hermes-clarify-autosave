@@ -10,6 +10,10 @@ entries, entitled exactly like ``clarify.lock``: only a viewer attached to that 
 ``session:respond``, never across sessions or profiles.
 """
 import asyncio
+import os
+from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -17,6 +21,12 @@ import pytest
 from gateway.config import Platform
 from tests.gateway.test_clarify_drafts_owner import _draft, _lock, _owner, _rid, _rpc, _start_batch
 
+# Windows children need the system environment (Winsock: without SYSTEMROOT ``import asyncio`` dies in
+# ``_overlapped`` with WinError 10106; temp, PATHEXT) that the hermetic test process still carries; POSIX only
+# ever uses the first three. Same list as the other real-gateway child probes.
+_CHILD_ENV_KEYS = ('PATH', 'LANG', 'TZ', 'SYSTEMROOT', 'SYSTEMDRIVE', 'WINDIR', 'COMSPEC', 'TEMP', 'TMP',
+                   'PATHEXT', 'LOCALAPPDATA', 'APPDATA', 'PROGRAMDATA', 'NUMBER_OF_PROCESSORS',
+                   'PROCESSOR_ARCHITECTURE')
 RESUME = {'id': 1, 'method': 'session.resume', 'params': {'session_id': 's'}}
 
 
@@ -140,3 +150,20 @@ async def test_only_a_viewer_attached_with_respond_gets_the_request_never_anothe
     finally:
         for connection in (owner, foreign, read_only, unattached, other_session):
             await connection.close()
+
+
+def test_a_forced_socket_close_loses_neither_the_open_batch_nor_its_locks_and_drafts_end_to_end(tmp_path):
+    """Real gateway process and WebSockets: a Desktop-shaped (``gui``) viewer locks one answer and saves drafts,
+    its connection is aborted with no close handshake, and the fresh socket's reconnect handshake restores the
+    request with both; the same request then settles through the new socket and the answers reach the real model."""
+    home, state = tmp_path / 'home', tmp_path / 'state'
+    home.mkdir()
+    state.mkdir()
+    repo = Path(__file__).resolve().parents[2]
+    env = {key: os.environ[key] for key in _CHILD_ENV_KEYS if key in os.environ}
+    env.update(HOME=str(home), USERPROFILE=str(home), HERMES_HOME=str(state), PYTHONPATH=str(repo))
+    result = subprocess.run(
+        [sys.executable, str(Path(__file__).parent / 'fixtures' / 'authority_clarify_reconnect_peer.py')],
+        cwd=tmp_path, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (state / 'reconnect-passed').read_text() == 'the open batch survived the forced close'

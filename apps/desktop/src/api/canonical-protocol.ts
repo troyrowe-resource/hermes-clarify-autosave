@@ -733,9 +733,16 @@ export class CanonicalDesktopProtocol {
       return projected
     })
 
-    const open_requests = prompts.map((prompt: Record<string, unknown>) => ({
-      id: prompt.prompt_id, method: prompt.kind, params: canonicalPromptParams(prompt.kind, sid, prompt)
-    }))
+    // The owner's own list rides beside the prompts: an open BATCH clarify (one `clarify` server request
+    // with its locks and unsent drafts) is not a `prompts` entry, which would turn its Confirm into a
+    // single-answer `clarify.respond`. The channel already re-delivered those entries from the raw answer;
+    // keeping them here is what stops the resume reconciliation from reading the snapshot as "no question".
+    const open_requests = [
+      ...(Array.isArray(value.open_requests) ? value.open_requests : []),
+      ...prompts.map((prompt: Record<string, unknown>) => ({
+        id: prompt.prompt_id, method: prompt.kind, params: canonicalPromptParams(prompt.kind, sid, prompt)
+      }))
+    ]
 
     return { ...value, open_requests, pending_approval: prompts.find((p: any) => p.kind === 'approval'), pending_clarify: prompts.find((p: any) => p.kind === 'clarify'), info: { ...value.info, stored_session_id: value.stored_session_id, pending_submissions: value.pending_submissions, replay_epoch: value.replay_epoch, last_sequence: value.last_sequence, execution_generation: value.execution_generation, running: value.running } }
   }

@@ -16,14 +16,19 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Package = (Join-Path $PSScriptRoot 'candidate-package')
+    [string]$LauncherSource = (Join-Path $PSScriptRoot 'candidate-package')
 )
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
+. (Join-Path $LauncherSource 'launcher\CandidateCommon.ps1')
+
 $shell = (Get-Process -Id $PID).Path
 $work = Join-Path ([System.IO.Path]::GetTempPath()) ('hermes-launcher-selftest-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+New-Item -ItemType Directory -Force -Path $work | Out-Null
+# The launcher compares long-form paths; runner temp directories are spelled with 8.3 short names.
+$work = Get-NormalPath $work
 $commit = 'abcdef0123456789abcdef0123456789abcdef01'
 $exeName = 'hermes-abcdef0.exe'
 $results = New-Object System.Collections.Generic.List[object]
@@ -54,7 +59,7 @@ foreach ($path in @((Join-Path $realLocal 'hermes'), (Join-Path $realRoaming 'He
 # --- The fake package: shipped launcher + a compiled stand-in for the app executable ------------------------------
 $package = Join-Path $work 'pkg'
 New-Item -ItemType Directory -Force -Path (Join-Path $package 'app\resources') | Out-Null
-Copy-Item -Path (Join-Path $Package '*') -Destination $package -Recurse -Force
+Copy-Item -Path (Join-Path $LauncherSource '*') -Destination $package -Recurse -Force
 $source = Join-Path $work 'fake-app.cs'
 Set-Content -LiteralPath $source -Encoding ASCII -Value @'
 using System;
@@ -77,8 +82,8 @@ $exe = Join-Path $package ('app\' + $exeName)
 & $csc /nologo /target:exe ('/out:' + $exe) $source | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'could not compile the stand-in executable' }
 
-function Write-PackageFiles([string]$UpdateMechanism = 'external', [string]$Source = 'commit-build') {
-    $stamp = [ordered]@{ source = $Source; updateMechanism = $UpdateMechanism; payload = 'bundled'; commit = $commit }
+function Write-PackageFiles([string]$UpdateMechanism = 'external', [string]$BuildSource = 'commit-build') {
+    $stamp = [ordered]@{ source = $BuildSource; updateMechanism = $UpdateMechanism; payload = 'bundled'; commit = $commit }
     Set-Content -LiteralPath (Join-Path $package 'app\resources\install-stamp.json') -Value ($stamp | ConvertTo-Json) -Encoding ASCII
     $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant()
     $manifest = [ordered]@{
@@ -91,11 +96,11 @@ function Write-PackageFiles([string]$UpdateMechanism = 'external', [string]$Sour
 Write-PackageFiles
 
 # --- Running the launcher in a child shell whose INHERITED environment is the fake real profile -----------------
-function Invoke-Launcher([string]$Script, [string[]]$Arguments, [hashtable]$Environment = @{}) {
+function Invoke-Launcher([string]$ScriptName, [string[]]$Arguments, [hashtable]$Environment = @{}) {
     $info = New-Object System.Diagnostics.ProcessStartInfo
     $info.FileName = $shell
     $quoted = @($Arguments | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } })
-    $info.Arguments = (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + (Join-Path $package ('launcher\' + $Script)) + '"')) + $quoted) -join ' '
+    $info.Arguments = (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + (Join-Path $package ('launcher\' + $ScriptName)) + '"')) + $quoted) -join ' '
     $info.UseShellExecute = $false
     $info.RedirectStandardOutput = $true
     $info.RedirectStandardError = $true
@@ -121,7 +126,7 @@ function Test-Refused([string]$Name, [string]$Root, [int]$Code = 2, [hashtable]$
         if ($run.Err -notmatch 'REFUSING TO START') { return "no refusal message: $($run.Err.Trim())" }
         if ($run.Out.Trim()) { return "a refusal still printed a launch contract: $($run.Out.Trim())" }
         if ($ExpectNothingCreated -and (Test-Path -LiteralPath (Join-Path $Root 'user-data'))) { return "a refusal created $Root\user-data" }
-    }.GetNewClosure()
+    }
 }
 
 # --- The safe case ----------------------------------------------------------------------------------------------
@@ -145,27 +150,27 @@ if ($contract) {
         if ($envMap['HERMES_HOME'] -ne (Join-Path $envMap['HERMES_DESKTOP_USER_DATA_DIR'] 'hermes-home')) { return "HERMES_HOME $($envMap['HERMES_HOME'])" }
         foreach ($name in @('userData', 'hermesHome', 'profile', 'roaming', 'local', 'temp')) { if (-not (Test-Path -LiteralPath $contract.layout.$name)) { return "$name was not created" } }
         if (-not (Test-Path -LiteralPath (Join-Path $sandbox '.hermes-clarify-candidate-sandbox'))) { return 'no sandbox marker' }
-    }.GetNewClosure()
+    }
     Assert-Case 'the isolation flags are set and nothing from the real user environment leaks in' {
         foreach ($name in @('HERMES_DESKTOP_IGNORE_EXISTING', 'HERMES_DESKTOP_ISOLATED_BACKEND', 'HERMES_DESKTOP_SKIP_PROTOCOL_REGISTRATION')) { if ($envMap[$name] -ne '1') { return "$name=$($envMap[$name])" } }
         if ($envMap['HERMES_DESKTOP_APP_NAME'] -ne 'HermesClarifyCandidate-abcdef0') { return "app name $($envMap['HERMES_DESKTOP_APP_NAME'])" }
         foreach ($name in @('OPENAI_API_KEY', 'GITHUB_TOKEN', 'HERMES_FOO', 'NODE_OPTIONS', 'ELECTRON_RUN_AS_NODE', 'PYTHONPATH')) { if ($envMap.ContainsKey($name)) { return "$name leaked into the candidate" } }
         if (-not $envMap.ContainsKey('SystemRoot') -or -not $envMap.ContainsKey('PATH')) { return 'SystemRoot or PATH was dropped; Windows programs and Python sockets need them' }
         foreach ($path in $contract.refusedLocations) { if ($envMap.Values -contains $path) { return "a real location $path is in the candidate environment" } }
-    }.GetNewClosure()
+    }
     Assert-Case 'the real locations it guards are the fake real profile, not the sandbox' {
         $locations = @($contract.refusedLocations)
         foreach ($expected in @((Join-Path $realLocal 'hermes'), (Join-Path $real '.hermes'), (Join-Path $realRoaming 'Hermes'))) {
             if (-not ($locations | Where-Object { $_ -ieq $expected })) { return "$expected is not guarded: $($locations -join '; ')" }
         }
-    }.GetNewClosure()
+    }
 }
 Assert-Case 'the default root is under LOCALAPPDATA, beside (not inside) the installed Hermes home' {
     $run = Invoke-Launcher 'Start-HermesClarifyCandidate.ps1' @('-EmitEnvironment')
     if ($run.Code -ne 0) { return "exit $($run.Code): $($run.Err.Trim())" }
     $root = ($run.Out.Trim() | ConvertFrom-Json).layout.root
     if ($root -ne (Join-Path $realLocal 'HermesClarifyCandidate')) { return "default root $root" }
-}.GetNewClosure()
+}
 
 # --- Refusals: each is exit 2, a message, and nothing created ----------------------------------------------------------
 Test-Refused 'refuses the default Hermes home itself' (Join-Path $realLocal 'hermes')
@@ -192,20 +197,20 @@ Assert-Case 'refuses an executable that no longer matches MANIFEST.json (exit 3)
     try { $run = Invoke-Launcher 'Start-HermesClarifyCandidate.ps1' @('-Root', (Join-Path $work 's3'), '-EmitEnvironment') }
     finally { Write-PackageFiles }
     if ($run.Code -ne 3 -or $run.Err -notmatch 'sha256') { return "exit $($run.Code): $($run.Err.Trim())" }
-}.GetNewClosure()
+}
 Write-PackageFiles
 Assert-Case 'refuses a build whose updater is not switched off (exit 4)' {
     Write-PackageFiles 'self' 'commit-build'
     try { $run = Invoke-Launcher 'Start-HermesClarifyCandidate.ps1' @('-Root', (Join-Path $work 's4'), '-EmitEnvironment') }
     finally { Write-PackageFiles }
     if ($run.Code -ne 4 -or $run.Err -notmatch 'updateMechanism') { return "exit $($run.Code): $($run.Err.Trim())" }
-}.GetNewClosure()
+}
 Assert-Case 'refuses a build that is not a one-commit build (exit 4)' {
     Write-PackageFiles 'external' 'git'
     try { $run = Invoke-Launcher 'Start-HermesClarifyCandidate.ps1' @('-Root', (Join-Path $work 's5'), '-EmitEnvironment') }
     finally { Write-PackageFiles }
     if ($run.Code -ne 4 -or $run.Err -notmatch "source=") { return "exit $($run.Code): $($run.Err.Trim())" }
-}.GetNewClosure()
+}
 
 # --- A real start: the stand-in executable sees exactly the launch contract --------------------------------------------
 Assert-Case 'starts the executable with the switch (spaces quoted) and ONLY the contract environment' {
@@ -218,11 +223,11 @@ Assert-Case 'starts the executable with the switch (spaces quoted) and ONLY the 
     $leaked = @($report | Where-Object { $_ -match '^ENV=(OPENAI_API_KEY|HERMES_FOO)=' })
     if ($leaked.Count) { return "leaked: $leaked" }
     if (@($report | Where-Object { $_ -like 'CWD=*' }) -notcontains ('CWD=' + (Join-Path $root 'tmp'))) { return 'wrong working directory' }
-}.GetNewClosure()
+}
 Assert-Case 'Stop-HermesClarifyCandidate ends nothing it does not own and exits 0' {
     $run = Invoke-Launcher 'Stop-HermesClarifyCandidate.ps1' @('-Root', (Join-Path $work 'started root'))
     if ($run.Code -ne 0 -or $run.Out -notmatch 'still running: 0') { return "exit $($run.Code): $($run.Out.Trim()) $($run.Err.Trim())" }
-}.GetNewClosure()
+}
 
 # --- Report ------------------------------------------------------------------------------------------------------------------
 if (Test-Path -LiteralPath $junction) { & cmd.exe /c ('rmdir "' + $junction + '"') | Out-Null }
